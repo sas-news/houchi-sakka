@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/secrets" },
+    { "path": "packages/providers" },
+    { "path": "packages/database" },
+    { "path": "packages/harness" },
+    { "path": "apps/web" },
+    { "path": "apps/runner" }
+  ]
+}

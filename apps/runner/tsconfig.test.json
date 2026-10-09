@@ -1,0 +1,40 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "noEmit": true,
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "@houchi/contracts": [
+        "../../packages/contracts/src/index.ts"
+      ],
+      "@houchi/database": [
+        "../../packages/database/src/index.ts"
+      ],
+      "@houchi/database/testing": [
+        "../../packages/database/src/testing.ts"
+      ],
+      "@houchi/harness": [
+        "../../packages/harness/src/index.ts"
+      ],
+      "@houchi/providers": [
+        "../../packages/providers/src/index.ts"
+      ],
+      "@houchi/secrets": [
+        "../../packages/secrets/src/index.ts"
+      ],
+      "@houchi/web": [
+        "../../apps/web/src/app.ts"
+      ]
+    },
+    "rootDir": "../.."
+  },
+  "include": [
+    "src",
+    "test",
+    "vitest.config.ts"
+  ]
+}

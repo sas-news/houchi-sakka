@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "references": [
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/secrets" },
+    { "path": "../../packages/database" }
+  ],
+  "include": ["src"]
+}
