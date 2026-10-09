@@ -135,7 +135,9 @@ function makeCtx(opts: {
 describe("orchestrator_turn harness", () => {
   it("happy path: 生成 → assistant メッセージ永続化 → complete", async () => {
     const provider = new StubProvider({ text: "わかりました" });
-    const store = { payload: { ...PAYLOAD } };
+    const store: { payload: Record<string, unknown> } = {
+      payload: { ...PAYLOAD },
+    };
     const persisted: ChatMessage[] = [];
     const patches: { workId: string; patch: Record<string, unknown> }[] = [];
     const { ctx, calls } = makeCtx({ provider, store, persisted, patches });
@@ -209,7 +211,7 @@ describe("orchestrator_turn harness", () => {
       persisted: [],
       patches: [],
     });
-    ctx.fetchOrchestratorContext = undefined;
+    delete ctx.fetchOrchestratorContext;
     const status = await runJob(makeJob(store.payload), ctx);
     expect(status).toBe("failed");
     expect(provider.calls).toBe(0);

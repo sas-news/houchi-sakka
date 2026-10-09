@@ -1,9 +1,5 @@
 import { hostname } from "node:os";
-import {
-  OpenAIResponsesProvider,
-  StubProvider,
-  type Provider,
-} from "@houchi/providers";
+import { createProviders, type Provider } from "@houchi/providers";
 import { ApiClient } from "./api.js";
 import { runLoop, tick, type RunnerDeps } from "./loop.js";
 
@@ -14,6 +10,9 @@ import { runLoop, tick, type RunnerDeps } from "./loop.js";
  *
  * env: WEB_BASE_URL, EXECUTOR_TOKEN, POLL_INTERVAL_MS, LEASE_TTL_MS,
  *      EXECUTOR_ID, RUNNER_PROVIDER, OPENAI_API_KEY
+ *
+ * プロバイダーは openai / anthropic / stub のレジストリを常備し、
+ * ジョブ payload.provider で引く (キー管理画面で選んだ provider に対応)。
  * (.env があれば process.loadEnvFile で読む)
  */
 
@@ -75,10 +74,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const providers: Record<string, Provider> = {
-    openai: new OpenAIResponsesProvider(),
-    stub: new StubProvider(),
-  };
+  // openai / anthropic / stub のレジストリ。
+  const providers: Record<string, Provider> = createProviders();
 
   // RUNNER_PROVIDER / --provider で既定('openai'名)を差し替える。
   // payload.provider 未指定のジョブは 'openai' 名を引くため、
