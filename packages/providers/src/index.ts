@@ -1,3 +1,11 @@
+import { APICallError, RetryError, generateText, streamText } from "ai";
+import type {
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
+} from "ai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import type {
   ProviderInputMessage,
   ProviderRequest,
@@ -7,7 +15,11 @@ import type {
 
 /**
  * packages/providers — プロバイダー非依存の Provider インターフェースと
- * OpenAI Responses API アダプター / テスト用 Stub (spec §8.1, Phase 0)。
+ * 各社アダプター / テスト用 Stub (spec §8.1)。
+ *
+ * 内部実装は Vercel AI SDK (`ai`) に委譲し、OpenAI / Anthropic の
+ * API 差分はそちらに吸収させる。BYO APIキーは generate() 呼び出し時に
+ * 各プロバイダーファクトリへ渡す (環境変数フォールバックには頼らない)。
  */
 
 export class ProviderError extends Error {
@@ -43,178 +55,223 @@ export interface Provider {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI Responses API
+// プロバイダー名 → Provider (runner のレジストリ名に対応)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+/** payload.provider 未指定時の既定。 */
+export const DEFAULT_PROVIDER_NAME = "openai";
 
-interface ResponsesUsage {
-  input_tokens?: number;
-  output_tokens?: number;
+/**
+ * プロバイダー名から Provider を組み立てる。
+ * 未知の名前は undefined (呼び出し側でエラー化する)。
+ */
+export function createProvider(name: string): Provider | undefined {
+  switch (name) {
+    case "openai":
+      return new OpenAIResponsesProvider();
+    case "anthropic":
+      return new AnthropicProvider();
+    case "stub":
+      return new StubProvider();
+    default:
+      return undefined;
+  }
 }
 
-interface ResponsesContentPart {
-  type?: string;
-  text?: string;
+/** 全プロバイダーのレジストリ (runner がそのまま使える形)。 */
+export function createProviders(): Record<string, Provider> {
+  return {
+    openai: new OpenAIResponsesProvider(),
+    anthropic: new AnthropicProvider(),
+    stub: new StubProvider(),
+  };
 }
 
-interface ResponsesOutputItem {
-  type?: string;
-  content?: ResponsesContentPart[];
+// ---------------------------------------------------------------------------
+// Vercel AI SDK 共通実装
+// ---------------------------------------------------------------------------
+
+/**
+ * req.model + apiKey から AI SDK の LanguageModel を作るファクトリ。
+ * 実運用では各社の createXxx({ apiKey }) を噛ませる。
+ * テストでは MockLanguageModelV4 等を返すフェイクを差し込む。
+ */
+export type LanguageModelFactory = (
+  modelId: string,
+  apiKey: string,
+) => LanguageModel;
+
+/** ProviderInputMessage → AI SDK ModelMessage。 */
+function toMessages(input: ProviderInputMessage[]): ModelMessage[] {
+  return input.map((m): ModelMessage => {
+    switch (m.role) {
+      // AI SDK に 'developer' ロールは無い。system に畳む
+      // (OpenAI 側では SDK が system→developer に再マップする)。
+      case "system":
+      case "developer":
+        return { role: "system", content: m.content };
+      case "assistant":
+        return { role: "assistant", content: m.content };
+      case "user":
+      default:
+        return { role: "user", content: m.content };
+    }
+  });
 }
 
-interface ResponsesBody {
-  output_text?: string;
-  output?: ResponsesOutputItem[];
-  usage?: ResponsesUsage;
-}
-
-function extractUsage(u: ResponsesUsage | undefined): ProviderUsage {
+function extractUsage(u: LanguageModelUsage | undefined): ProviderUsage {
   if (
     u &&
-    typeof u.input_tokens === "number" &&
-    typeof u.output_tokens === "number"
+    typeof u.inputTokens === "number" &&
+    typeof u.outputTokens === "number"
   ) {
-    return { input_tokens: u.input_tokens, output_tokens: u.output_tokens };
+    return { input_tokens: u.inputTokens, output_tokens: u.outputTokens };
   }
   return "unknown";
 }
 
-function extractText(body: ResponsesBody): string {
-  if (typeof body.output_text === "string") return body.output_text;
-  const parts: string[] = [];
-  for (const item of body.output ?? []) {
-    if (item.type !== "message") continue;
-    for (const part of item.content ?? []) {
-      if (part.type === "output_text" && typeof part.text === "string") {
-        parts.push(part.text);
-      }
-    }
+/** エラーメッセージに apiKey が紛れ込んだ場合に備えて伏せる。 */
+function scrubSecrets(text: string, apiKey: string): string {
+  return apiKey === "" ? text : text.split(apiKey).join("***");
+}
+
+const NETWORK_ERROR_PATTERN =
+  /fetch failed|econnrefused|enotfound|econnreset|econnaborted|etimedout|eai_again|epipe|socket hang ?up|network|timed out|terminated|connection/i;
+
+/** 生の Error (fetch 失敗の TypeError 等) がネットワーク系かを cause チェーンで判定する。 */
+function isNetworkError(e: Error): boolean {
+  for (let cur: unknown = e; cur instanceof Error; cur = cur.cause) {
+    if (NETWORK_ERROR_PATTERN.test(`${cur.name} ${cur.message}`)) return true;
   }
-  return parts.join("");
+  return false;
 }
 
-function toResponsesInput(input: ProviderInputMessage[]) {
-  return input.map((m) => ({
-    type: "message",
-    role: m.role,
-    content: [{ type: "input_text", text: m.content }],
-  }));
+/** AI SDK / その他の例外を既存の ProviderError 系にマップする。 */
+function toProviderError(e: unknown, apiKey: string): ProviderError {
+  if (e instanceof ProviderError) return e;
+
+  // リトライ枯渇は最後のエラー (APICallError 等) に置き換えて判定する。
+  if (RetryError.isInstance(e)) {
+    const last = e.lastError ?? e.errors.at(-1);
+    if (last !== undefined) return toProviderError(last, apiKey);
+  }
+  if (APICallError.isInstance(e)) {
+    if (typeof e.statusCode === "number") {
+      return new ProviderHttpError(
+        e.statusCode,
+        scrubSecrets(e.responseBody ?? e.message, apiKey).slice(0, 1000),
+      );
+    }
+    // statusCode が無い = 応答に届いていない (DNS・接続拒否・タイムアウト)。
+    return new ProviderNetworkError(scrubSecrets(e.message, apiKey));
+  }
+  if (e instanceof Error) {
+    const message = scrubSecrets(e.message, apiKey);
+    return isNetworkError(e)
+      ? new ProviderNetworkError(message)
+      : new ProviderError(message);
+  }
+  return new ProviderError(scrubSecrets(String(e), apiKey));
 }
 
-export class OpenAIResponsesProvider implements Provider {
+export interface AiSdkProviderOptions {
+  /** プロバイダーの baseURL を変えたい場合 (プロキシ・モック鯖等)。 */
+  baseURL?: string;
+  /** テスト差し替え用。未指定時は各社の createXxx({ apiKey })。 */
+  modelFactory?: LanguageModelFactory;
+}
+
+/**
+ * AI SDK ベースの Provider 実装。
+ * modelFactory で LanguageModel を解決し、generateText / streamText に投げる。
+ */
+export class AiSdkProvider implements Provider {
   readonly requiresKey = true;
 
-  constructor(
-    private readonly opts: {
-      baseUrl?: string;
-      fetchImpl?: typeof fetch;
-    } = {},
-  ) {}
-
-  private endpoint(): string {
-    return `${this.opts.baseUrl ?? DEFAULT_BASE_URL}/responses`;
-  }
+  constructor(private readonly modelFactory: LanguageModelFactory) {}
 
   async generate(
     req: ProviderRequest,
     apiKey: string,
     onToken?: TokenCallback,
   ): Promise<ProviderResponse> {
-    const fetchImpl = this.opts.fetchImpl ?? fetch;
-    let res: Response;
+    const model = this.modelFactory(req.model, apiKey);
+    const messages = toMessages(req.input);
+    if (req.stream === true) {
+      return this.generateStream(model, messages, apiKey, onToken);
+    }
     try {
-      res = await fetchImpl(this.endpoint(), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: req.model,
-          input: toResponsesInput(req.input),
-          ...(req.stream ? { stream: true } : {}),
-        }),
+      // input はサービス側が組み立てた信頼メッセージ列なので system 混在を許可する。
+      const res = await generateText({
+        model,
+        messages,
+        allowSystemInMessages: true,
       });
+      return { output_text: res.text, usage: extractUsage(res.usage) };
     } catch (e) {
-      throw new ProviderNetworkError(
-        `request failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      throw toProviderError(e, apiKey);
     }
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 1000);
-      throw new ProviderHttpError(res.status, body);
-    }
-    if (req.stream) {
-      return this.readStream(res, onToken);
-    }
-    const body = (await res.json()) as ResponsesBody;
-    return { output_text: extractText(body), usage: extractUsage(body.usage) };
   }
 
-  /** SSE を読み、delta を onToken へ流し、最終 response.completed を解釈する。 */
-  private async readStream(
-    res: Response,
-    onToken: TokenCallback | undefined,
+  private async generateStream(
+    model: LanguageModel,
+    messages: ModelMessage[],
+    apiKey: string,
+    onToken?: TokenCallback,
   ): Promise<ProviderResponse> {
-    if (!res.body) throw new ProviderNetworkError("empty stream body");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let accumulated = "";
-    let finalBody: ResponsesBody | undefined;
-
-    const handleEvent = (data: string) => {
-      if (data === "[DONE]") return;
-      let evt: {
-        type?: string;
-        delta?: string;
-        response?: ResponsesBody;
-        error?: { message?: string };
-      };
-      try {
-        evt = JSON.parse(data) as typeof evt;
-      } catch {
-        return;
-      }
-      if (evt.type === "response.output_text.delta" && evt.delta) {
-        accumulated += evt.delta;
-        onToken?.(evt.delta);
-      } else if (evt.type === "response.completed" && evt.response) {
-        finalBody = evt.response;
-      } else if (
-        evt.type === "response.failed" ||
-        evt.type === "error"
-      ) {
-        throw new ProviderHttpError(500, evt.error?.message ?? evt.type);
-      }
-    };
-
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, idx).trimEnd();
-          buf = buf.slice(idx + 1);
-          if (line.startsWith("data:")) handleEvent(line.slice(5).trim());
+      const result = streamText({
+        model,
+        messages,
+        allowSystemInMessages: true,
+      });
+      let accumulated = "";
+      // textStream ではなく fullStream を読み、error パートをここで例外化する
+      // (result.text / result.usage はストリーム中のエラーでは reject されない)。
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") {
+          accumulated += part.text;
+          onToken?.(part.text);
+        } else if (part.type === "error") {
+          throw part.error;
         }
       }
-      const tail = buf.trim();
-      if (tail.startsWith("data:")) handleEvent(tail.slice(5).trim());
-    } finally {
-      reader.releaseLock();
-    }
-
-    if (finalBody) {
+      const [finalText, usage] = await Promise.all([result.text, result.usage]);
       return {
-        output_text: extractText(finalBody) || accumulated,
-        usage: extractUsage(finalBody.usage),
+        output_text: finalText || accumulated,
+        usage: extractUsage(usage),
       };
+    } catch (e) {
+      throw toProviderError(e, apiKey);
     }
-    return { output_text: accumulated, usage: "unknown" };
+  }
+}
+
+/** OpenAI (Responses API)。内部は @ai-sdk/openai。 */
+export class OpenAIResponsesProvider extends AiSdkProvider {
+  constructor(opts: AiSdkProviderOptions = {}) {
+    super(
+      opts.modelFactory ??
+        ((modelId, apiKey) =>
+          createOpenAI({
+            apiKey,
+            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+          })(modelId)),
+    );
+  }
+}
+
+/** Anthropic (Messages API)。内部は @ai-sdk/anthropic。 */
+export class AnthropicProvider extends AiSdkProvider {
+  constructor(opts: AiSdkProviderOptions = {}) {
+    super(
+      opts.modelFactory ??
+        ((modelId, apiKey) =>
+          createAnthropic({
+            apiKey,
+            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+          })(modelId)),
+    );
   }
 }
 
