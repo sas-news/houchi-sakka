@@ -1,0 +1,32 @@
+{
+  "name": "@houchi/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "dev": "wrangler dev --local --port 8787"
+  },
+  "dependencies": {
+    "@houchi/contracts": "workspace:*",
+    "@houchi/database": "workspace:*",
+    "@houchi/secrets": "workspace:*",
+    "drizzle-orm": "^0.44.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251004.0",
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.40.0"
+  }
+}

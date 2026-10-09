@@ -1,0 +1,12 @@
+name = "houchi-sakka-web"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ローカル開発: wrangler d1 migrations apply houchi-sakka --local
+# (migrations は packages/database/migrations が正本)
+[[d1_databases]]
+binding = "DB"
+database_name = "houchi-sakka"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "../../packages/database/migrations"
