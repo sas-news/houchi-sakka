@@ -1,17 +1,22 @@
 import type {
+  AppendMessageRequest,
+  AppendMessageResponse,
   CompleteRequest,
   CreateJobRequest,
   CreateJobResponse,
   CreateKeyRequest,
   CreateKeyResponse,
   FailRequest,
-  GetKeyResponse,
   HeartbeatRequest,
   JobResponse,
   LeaseRequest,
   LeaseResponse,
   ProgressRequest,
   ProgressResponse,
+  ResolveKeyRequest,
+  ResolveKeyResponse,
+  ThreadContextResponse,
+  WorkPatchRequest,
 } from "@houchi/contracts";
 
 /** Web API クライアント (実行体認証)。HTTP エラーは status/code 付きで型付ける。 */
@@ -80,8 +85,24 @@ export class ApiClient {
   fail(id: string, req: FailRequest): Promise<JobResponse> {
     return this.call("POST", `/api/jobs/${id}/fail`, req);
   }
-  getKey(ref: string): Promise<GetKeyResponse> {
-    return this.call("GET", `/api/internal/keys/${ref}`);
+  resolveKey(ref: string, req: ResolveKeyRequest): Promise<ResolveKeyResponse> {
+    return this.call("POST", `/api/internal/keys/${ref}/resolve`, req);
+  }
+  getThreadContext(id: string): Promise<ThreadContextResponse> {
+    return this.call("GET", `/api/internal/threads/${id}/context`);
+  }
+  appendMessage(
+    threadId: string,
+    req: AppendMessageRequest,
+  ): Promise<AppendMessageResponse> {
+    return this.call(
+      "POST",
+      `/api/internal/threads/${threadId}/messages`,
+      req,
+    );
+  }
+  patchWork(id: string, req: WorkPatchRequest): Promise<unknown> {
+    return this.call("POST", `/api/internal/works/${id}/patch`, req);
   }
   createKey(req: CreateKeyRequest): Promise<CreateKeyResponse> {
     return this.call("POST", "/api/internal/keys", req);

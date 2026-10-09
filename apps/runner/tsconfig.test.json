@@ -28,6 +28,12 @@
       ],
       "@houchi/web": [
         "../../apps/web/src/app.ts"
+      ],
+      "@houchi/web/auth": [
+        "../../apps/web/src/auth.ts"
+      ],
+      "@houchi/prompts": [
+        "../../packages/prompts/src/index.ts"
       ]
     },
     "rootDir": "../.."

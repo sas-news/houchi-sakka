@@ -13,6 +13,7 @@ function makeJob(payload: Record<string, unknown>): AgentJob {
     id: "j1",
     kind: "smoke_generate",
     work_ref: null,
+    user_ref: null,
     payload,
     idempotency_key: "k",
     status: "leased",

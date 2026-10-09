@@ -1,9 +1,14 @@
 name = "houchi-sakka-web"
-main = "src/index.ts"
+main = "workers/app.ts"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ローカル開発: wrangler d1 migrations apply houchi-sakka --local
+# vite build のクライアント成果物 (react-router build → build/client)
+[assets]
+directory = "./build/client/"
+binding = "ASSETS"
+
+# ローカル開発: pnpm d1:migrate --local
 # (migrations は packages/database/migrations が正本)
 [[d1_databases]]
 binding = "DB"

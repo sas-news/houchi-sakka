@@ -13,6 +13,9 @@
       ],
       "@houchi/providers": [
         "../providers/src/index.ts"
+      ],
+      "@houchi/prompts": [
+        "../prompts/src/index.ts"
       ]
     },
     "rootDir": "../.."

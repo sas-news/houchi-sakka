@@ -74,15 +74,24 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
   };
 
   const ctx: JobContext = {
-    resolveKey: async (keyRef) => {
+    resolveKey: async (keyRef, jobRef) => {
       if (deps.envKey !== undefined) return deps.envKey;
       if (!keyRef) {
         throw new Error(
           "job payload has no key_ref (use --env-key for local runs)",
         );
       }
-      const res = await api.getKey(keyRef);
+      const res = await api.resolveKey(keyRef, { job_id: jobRef ?? jobId });
       return res.api_key;
+    },
+    fetchOrchestratorContext: async (threadId) =>
+      api.getThreadContext(threadId),
+    persistChatMessage: async (req) => {
+      const res = await api.appendMessage(req.thread_id, req);
+      return res.message;
+    },
+    applyWorkPatch: async (workId, patch) => {
+      await api.patchWork(workId, patch);
     },
     getProvider: (name) => {
       const provider = deps.providers[name ?? "openai"];

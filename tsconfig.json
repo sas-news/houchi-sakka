@@ -6,7 +6,7 @@
     { "path": "packages/providers" },
     { "path": "packages/database" },
     { "path": "packages/harness" },
-    { "path": "apps/web" },
+    { "path": "packages/prompts" },
     { "path": "apps/runner" }
   ]
 }

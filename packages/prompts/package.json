@@ -1,5 +1,5 @@
 {
-  "name": "@houchi/harness",
+  "name": "@houchi/prompts",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,9 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@houchi/contracts": "workspace:*",
-    "@houchi/providers": "workspace:*",
-    "@houchi/prompts": "workspace:*"
+    "@houchi/contracts": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

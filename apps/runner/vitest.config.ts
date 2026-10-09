@@ -12,6 +12,7 @@ export default defineConfig({
       { find: /^@houchi\/harness$/, replacement: r("../../packages/harness/src/index.ts") },
       { find: /^@houchi\/providers$/, replacement: r("../../packages/providers/src/index.ts") },
       { find: /^@houchi\/secrets$/, replacement: r("../../packages/secrets/src/index.ts") },
+      { find: /^@houchi\/web\/auth$/, replacement: r("../../apps/web/src/auth.ts") },
       { find: /^@houchi\/web$/, replacement: r("../../apps/web/src/app.ts") },
     ],
   },
