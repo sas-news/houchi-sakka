@@ -11,21 +11,33 @@
     }
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "react-router build",
+    "typecheck": "react-router typegen && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "dev": "wrangler dev --local --port 8787"
+    "dev": "vite dev",
+    "d1:migrate": "wrangler d1 migrations apply houchi-sakka"
   },
   "dependencies": {
     "@houchi/contracts": "workspace:*",
     "@houchi/database": "workspace:*",
     "@houchi/secrets": "workspace:*",
-    "drizzle-orm": "^0.44.5"
+    "better-auth": "^1.7.7",
+    "drizzle-orm": "^0.44.5",
+    "isbot": "^5.2.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router": "^8.4.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.63.0",
     "@cloudflare/workers-types": "^4.20251004.0",
+    "@react-router/dev": "^8.4.0",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "typescript": "~5.9.3",
+    "vite": "^8.3.4",
+    "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^3.2.4",
     "wrangler": "^4.40.0"
   }

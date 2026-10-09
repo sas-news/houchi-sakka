@@ -2,8 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { DbLike } from "./index.js";
+import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
 /**
  * ローカル開発・テスト用: migrations/*.sql をメモリ上の better-sqlite3 に
@@ -16,7 +15,7 @@ export function createTestDb(
     "..",
     "migrations",
   ),
-): DbLike {
+): BetterSQLite3Database {
   const sqlite = new BetterSqlite3(":memory:");
   const files = readdirSync(migrationsDir)
     .filter((f) => f.endsWith(".sql"))

@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listProgress } from "@houchi/database";
 import { createTestDb } from "@houchi/database/testing";
+import { createAuth } from "@houchi/web/auth";
 import { StubProvider } from "@houchi/providers";
 import { createApp, type FetchHandler } from "@houchi/web";
 import { ApiClient } from "../src/api.js";
@@ -69,7 +70,20 @@ const PAYLOAD = {
 
 beforeEach(async () => {
   db = createTestDb();
-  const app = createApp({ db, secretKey: SECRET_KEY, executorToken: TOKEN });
+  const auth = createAuth(db, {
+    baseUrl: "http://localhost",
+    secret: SECRET_KEY,
+    devLoginEnabled: false,
+  });
+  const app = createApp({
+    db,
+    secretKey: SECRET_KEY,
+    executorToken: TOKEN,
+    auth,
+    devLoginEnabled: false,
+    defaultModel: "stub",
+    baseUrl: "http://localhost",
+  });
   await serve(app);
   api = new ApiClient(baseUrl, TOKEN);
   logs.length = 0;
@@ -170,6 +184,7 @@ describe("runner e2e", () => {
       kind: "smoke_generate",
       payload: { ...PAYLOAD, provider: "openai", key_ref: key.id },
       idempotency_key: "e2e-3",
+      user_ref: "u",
     });
     // OpenAI プロバイダーを偽装するスタブ (requiresKey=true 相当に見せる)
     const keyAware = new StubProvider({ text: "with-key" });

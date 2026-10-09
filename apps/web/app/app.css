@@ -1,0 +1,226 @@
+:root {
+  --bg: #faf9f7;
+  --fg: #1d1a16;
+  --muted: #6b655c;
+  --border: #ddd6cc;
+  --accent: #7a3b2e;
+  --accent-fg: #ffffff;
+  --panel: #ffffff;
+  --danger: #a03030;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP",
+    system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.6;
+}
+
+a {
+  color: var(--accent);
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.page h1 {
+  font-size: 1.4rem;
+  margin: 8px 0 16px;
+}
+
+.page h2 {
+  font-size: 1.1rem;
+  margin: 24px 0 8px;
+}
+
+.topnav {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.topnav .brand {
+  font-weight: bold;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.topnav .spacer {
+  flex: 1;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+label {
+  display: block;
+  font-size: 0.9rem;
+  margin: 12px 0 4px;
+}
+
+input[type="text"],
+input[type="password"],
+textarea,
+select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: inherit;
+  background: #fff;
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+button,
+.btn {
+  display: inline-block;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 0.95rem;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+}
+
+button.secondary,
+.btn.secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.form-actions {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.notice {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fdf7ec;
+  padding: 10px;
+  font-size: 0.85rem;
+}
+
+/* 対話パネル */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.msg {
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-width: 92%;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: #e8ded2;
+}
+
+.msg.assistant,
+.msg.system {
+  align-self: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.msg .who {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.job-status {
+  align-self: flex-start;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.job-status .stream {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.work-meta dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.work-meta dt {
+  color: var(--muted);
+}
+
+.work-meta dd {
+  margin: 0;
+}
+
+@media (min-width: 720px) {
+  .work-layout {
+    display: grid;
+    grid-template-columns: 1fr 240px;
+    gap: 16px;
+    align-items: start;
+  }
+}

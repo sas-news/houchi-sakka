@@ -1,11 +1,18 @@
 import {
+  JOB_KIND_ORCHESTRATOR_TURN,
   JOB_KIND_SMOKE_GENERATE,
   SmokeGeneratePayloadSchema,
   type AgentJob,
+  type ChatMessage,
+  type ChatRole,
+  type ChatThread,
   type ProgressEventType,
   type SmokeGenerateResult,
+  type Work,
+  type WorkPatchRequest,
 } from "@houchi/contracts";
 import type { Provider, TokenCallback } from "@houchi/providers";
+import { runOrchestratorTurn } from "./orchestrator.js";
 
 /**
  * packages/harness — ジョブ種別ごとの永続ステートマシン (spec §8.1 Harness)。
@@ -29,14 +36,30 @@ export class JobInfraError extends Error {
   }
 }
 
+/** orchestrator_turn がスレッド履歴と作品情報を取る経路の返り値。 */
+export interface OrchestratorContextData {
+  work: Work;
+  thread: ChatThread;
+  messages: ChatMessage[];
+}
+
 /**
  * 実行時に runner が差し込むポート群。
  * resolveKey / getProvider はジョブ起因の失敗をそのまま投げてよい。
  * postProgress / saveCheckpoint / complete / fail は失敗時 JobInfraError を投げる
  * こと (runner 側で包む実装にする)。
+ * fetchOrchestratorContext / persistChatMessage / applyWorkPatch は
+ * orchestrator_turn 専用で、ジョブ起因の失敗をそのまま投げてよい。
  */
 export interface JobContext {
-  resolveKey(keyRef: string | undefined): Promise<string | undefined>;
+  /**
+   * key_ref を平文キーへ解決する。jobId はサーバー側の owner 照合
+   * (ジョブを起こしたユーザーとキー所有者の一致確認) に使われる。
+   */
+  resolveKey(
+    keyRef: string | undefined,
+    jobId?: string,
+  ): Promise<string | undefined>;
   getProvider(name: string | undefined): Provider;
   postProgress(type: ProgressEventType, data: unknown): Promise<void>;
   /** payload.checkpoint への永続マージ。 */
@@ -44,6 +67,19 @@ export interface JobContext {
   /** 成果物確定 + 完了マーク (アトミック)。 */
   complete(result: unknown): Promise<void>;
   fail(error: string): Promise<void>;
+  /** orchestrator_turn: スレッド履歴と作品情報を取得する。 */
+  fetchOrchestratorContext?(
+    threadId: string,
+  ): Promise<OrchestratorContextData>;
+  /** orchestrator_turn: assistant メッセージを永続化する (job_id で冪等)。 */
+  persistChatMessage?(input: {
+    thread_id: string;
+    role: ChatRole;
+    content: string;
+    job_id: string;
+  }): Promise<ChatMessage>;
+  /** orchestrator_turn: WORK_PATCH を作品へ適用する。 */
+  applyWorkPatch?(workId: string, patch: WorkPatchRequest): Promise<void>;
 }
 
 export type JobHandler = (job: AgentJob, ctx: JobContext) => Promise<void>;
@@ -64,7 +100,7 @@ export const runSmokeGenerate: JobHandler = async (job, ctx) => {
   if (providerResult === undefined) {
     const provider = ctx.getProvider(payload.provider);
     const apiKey = provider.requiresKey
-      ? await ctx.resolveKey(payload.key_ref)
+      ? await ctx.resolveKey(payload.key_ref, job.id)
       : undefined;
 
     // token 進捗は発行順を保つよう逐次化する。
@@ -112,7 +148,10 @@ export const runSmokeGenerate: JobHandler = async (job, ctx) => {
 };
 
 export function createDefaultHandlers(): JobHandlers {
-  return { [JOB_KIND_SMOKE_GENERATE]: runSmokeGenerate };
+  return {
+    [JOB_KIND_SMOKE_GENERATE]: runSmokeGenerate,
+    [JOB_KIND_ORCHESTRATOR_TURN]: runOrchestratorTurn,
+  };
 }
 
 /**

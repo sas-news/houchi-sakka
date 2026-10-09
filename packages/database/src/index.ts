@@ -1,14 +1,24 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import {
   AgentJobSchema,
+  ChatMessageSchema,
+  ChatRoleSchema,
+  ChatThreadSchema,
   JobStatusSchema,
   ProgressEventSchema,
   ProviderKeySchema,
+  WorkSchema,
+  WorkStatusSchema,
   type AgentJob,
+  type ChatMessage,
+  type ChatRole,
+  type ChatThread,
   type JobStatus,
   type ProgressEvent,
   type ProgressEventType,
   type ProviderKey,
+  type Work,
+  type WorkStatus,
 } from "@houchi/contracts";
 
 export * from "./schema.js";
@@ -49,6 +59,7 @@ function rowToJob(r: Row): AgentJob {
     id: r.id,
     kind: r.kind,
     work_ref: r.work_ref ?? null,
+    user_ref: r.user_ref ?? null,
     payload: JSON.parse(String(r.payload)),
     idempotency_key: r.idempotency_key,
     status: JobStatusSchema.parse(r.status),
@@ -79,7 +90,40 @@ function rowToKey(r: Row): ProviderKey {
     id: r.id,
     owner_ref: r.owner_ref,
     label: r.label,
+    provider: r.provider,
     ciphertext: r.ciphertext,
+    created_at: r.created_at,
+  });
+}
+
+function rowToWork(r: Row): Work {
+  return WorkSchema.parse({
+    id: r.id,
+    owner_ref: r.owner_ref,
+    title: r.title,
+    premise: r.premise,
+    genre: r.genre,
+    status: WorkStatusSchema.parse(r.status),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  });
+}
+
+function rowToThread(r: Row): ChatThread {
+  return ChatThreadSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    created_at: r.created_at,
+  });
+}
+
+function rowToMessage(r: Row): ChatMessage {
+  return ChatMessageSchema.parse({
+    id: r.id,
+    thread_id: r.thread_id,
+    role: ChatRoleSchema.parse(r.role),
+    content: r.content,
+    job_id: r.job_id ?? null,
     created_at: r.created_at,
   });
 }
@@ -93,6 +137,7 @@ export async function createJob(
   input: {
     kind: string;
     workRef?: string | null;
+    userRef?: string | null;
     payload: Record<string, unknown>;
     idempotencyKey: string;
   },
@@ -101,9 +146,9 @@ export async function createJob(
   const t = now();
   const rows = (await db.all(sql`
     INSERT INTO agent_jobs
-      (id, kind, work_ref, payload, idempotency_key, status, attempts, created_at, updated_at)
+      (id, kind, work_ref, user_ref, payload, idempotency_key, status, attempts, created_at, updated_at)
     VALUES
-      (${id}, ${input.kind}, ${input.workRef ?? null},
+      (${id}, ${input.kind}, ${input.workRef ?? null}, ${input.userRef ?? null},
        ${JSON.stringify(input.payload)}, ${input.idempotencyKey},
        'queued', 0, ${t}, ${t})
     ON CONFLICT(idempotency_key) DO NOTHING
@@ -309,18 +354,40 @@ export async function listProgress(
   return rows.map(rowToEvent);
 }
 
+/**
+ * 作品に紐づく未完了ジョブ (queued/leased) を古い順で返す。
+ * 同一作品のジョブは直列化されるので先頭が「実行中/次に走る」もの。
+ */
+export async function listOpenJobsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<AgentJob[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM agent_jobs
+        WHERE work_ref = ${workId} AND status IN ('queued', 'leased')
+        ORDER BY created_at ASC`,
+  )) as Row[];
+  return rows.map(rowToJob);
+}
+
 // ---------------------------------------------------------------------------
 // provider_keys
 // ---------------------------------------------------------------------------
 
 export async function createKey(
   db: DbLike,
-  input: { ownerRef: string; label: string; ciphertext: string },
+  input: {
+    ownerRef: string;
+    label: string;
+    provider?: string;
+    ciphertext: string;
+  },
 ): Promise<ProviderKey> {
   const id = crypto.randomUUID();
   const rows = (await db.all(sql`
-    INSERT INTO provider_keys (id, owner_ref, label, ciphertext, created_at)
-    VALUES (${id}, ${input.ownerRef}, ${input.label}, ${input.ciphertext}, ${now()})
+    INSERT INTO provider_keys (id, owner_ref, label, provider, ciphertext, created_at)
+    VALUES (${id}, ${input.ownerRef}, ${input.label},
+            ${input.provider ?? "openai"}, ${input.ciphertext}, ${now()})
     RETURNING *
   `)) as Row[];
   return rowToKey(rows[0]!);
@@ -336,4 +403,198 @@ export async function getKeyById(
   return r ? rowToKey(r) : null;
 }
 
-export type { AgentJob, JobStatus, ProgressEvent, ProgressEventType, ProviderKey };
+/** 自分のキー一覧。ciphertext は呼び出し側で必ず削ること。 */
+export async function listKeysByOwner(
+  db: DbLike,
+  ownerRef: string,
+): Promise<ProviderKey[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM provider_keys WHERE owner_ref = ${ownerRef}
+        ORDER BY created_at ASC`,
+  )) as Row[];
+  return rows.map(rowToKey);
+}
+
+/** 所有者限定で削除。他人のキーは消せない (対象なし → false)。 */
+export async function deleteKey(
+  db: DbLike,
+  input: { id: string; ownerRef: string },
+): Promise<boolean> {
+  const rows = (await db.all(sql`
+    DELETE FROM provider_keys
+    WHERE id = ${input.id} AND owner_ref = ${input.ownerRef}
+    RETURNING id
+  `)) as Row[];
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// works / chat_threads / chat_messages (Phase 1a)
+// ---------------------------------------------------------------------------
+
+/** 作品と1本の対話スレッドを同時に作る (MVP は作品につきスレッド1本)。 */
+export async function createWork(
+  db: DbLike,
+  input: { ownerRef: string; title: string; premise?: string },
+): Promise<{ work: Work; thread: ChatThread }> {
+  const workId = crypto.randomUUID();
+  const threadId = crypto.randomUUID();
+  const t = now();
+  const workRows = (await db.all(sql`
+    INSERT INTO works (id, owner_ref, title, premise, genre, status, created_at, updated_at)
+    VALUES (${workId}, ${input.ownerRef}, ${input.title},
+            ${input.premise ?? ""}, '', 'setup', ${t}, ${t})
+    RETURNING *
+  `)) as Row[];
+  const threadRows = (await db.all(sql`
+    INSERT INTO chat_threads (id, work_id, created_at)
+    VALUES (${threadId}, ${workId}, ${t})
+    RETURNING *
+  `)) as Row[];
+  return {
+    work: rowToWork(workRows[0]!),
+    thread: rowToThread(threadRows[0]!),
+  };
+}
+
+export async function getWorkById(
+  db: DbLike,
+  id: string,
+): Promise<Work | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM works WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToWork(r) : null;
+}
+
+export async function listWorksByOwner(
+  db: DbLike,
+  ownerRef: string,
+): Promise<Work[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM works WHERE owner_ref = ${ownerRef}
+        ORDER BY updated_at DESC`,
+  )) as Row[];
+  return rows.map(rowToWork);
+}
+
+export async function patchWork(
+  db: DbLike,
+  input: {
+    id: string;
+    title?: string;
+    premise?: string;
+    genre?: string;
+    status?: WorkStatus;
+  },
+): Promise<Work | null> {
+  const cur = await getWorkById(db, input.id);
+  if (!cur) return null;
+  const rows = (await db.all(sql`
+    UPDATE works SET
+      title = ${input.title ?? cur.title},
+      premise = ${input.premise ?? cur.premise},
+      genre = ${input.genre ?? cur.genre},
+      status = ${input.status ?? cur.status},
+      updated_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rowToWork(rows[0]!);
+}
+
+export async function getThreadById(
+  db: DbLike,
+  id: string,
+): Promise<ChatThread | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM chat_threads WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToThread(r) : null;
+}
+
+export async function getThreadByWorkId(
+  db: DbLike,
+  workId: string,
+): Promise<ChatThread | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM chat_threads WHERE work_id = ${workId}`,
+  )) as Row | undefined;
+  return r ? rowToThread(r) : null;
+}
+
+export async function listMessages(
+  db: DbLike,
+  threadId: string,
+): Promise<ChatMessage[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM chat_messages WHERE thread_id = ${threadId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToMessage);
+}
+
+/**
+ * メッセージ追記。job_id 指定時はユニーク制約で冪等化する
+ * (orchestrator の再開で同じ assistant メッセージを二重確定しない)。
+ */
+export async function appendMessage(
+  db: DbLike,
+  input: {
+    threadId: string;
+    role: ChatRole;
+    content: string;
+    jobId?: string | null;
+  },
+): Promise<ChatMessage> {
+  const id = crypto.randomUUID();
+  const rows = (await db.all(sql`
+    INSERT INTO chat_messages (id, thread_id, role, content, job_id, created_at)
+    VALUES (${id}, ${input.threadId}, ${input.role}, ${input.content},
+            ${input.jobId ?? null}, ${now()})
+    ON CONFLICT(job_id) DO NOTHING
+    RETURNING *
+  `)) as Row[];
+  if (rows.length > 0) return rowToMessage(rows[0]!);
+  const existing = await getMessageByJobId(db, input.jobId!);
+  if (!existing) throw new RepoError("internal", "insert failed");
+  return existing;
+}
+
+// ---------------------------------------------------------------------------
+// better-auth が管理する user テーブルの最小読み取り (dev-login 用)。
+// ユーザー管理の書き込みはすべて better-auth 側に任せる。
+// ---------------------------------------------------------------------------
+
+export async function getUserIdByEmail(
+  db: DbLike,
+  email: string,
+): Promise<string | null> {
+  const r = (await db.get(
+    sql`SELECT id FROM user WHERE email = ${email}`,
+  )) as Row | undefined;
+  return r ? String(r.id) : null;
+}
+
+export async function getMessageByJobId(
+  db: DbLike,
+  jobId: string,
+): Promise<ChatMessage | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM chat_messages WHERE job_id = ${jobId}`,
+  )) as Row | undefined;
+  return r ? rowToMessage(r) : null;
+}
+
+export type {
+  AgentJob,
+  ChatMessage,
+  ChatRole,
+  ChatThread,
+  JobStatus,
+  ProgressEvent,
+  ProgressEventType,
+  ProviderKey,
+  Work,
+  WorkStatus,
+};

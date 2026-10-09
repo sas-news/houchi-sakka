@@ -1,36 +1,19 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "@houchi/database/testing";
-import { createApp, type FetchHandler } from "../src/app.js";
-
-const SECRET_KEY = btoa("0123456789abcdef0123456789abcdef");
-const TOKEN = "test-executor-token";
+import type { FetchHandler } from "../src/app.js";
+import { makeApp, makeCall, TOKEN } from "./helpers.js";
 
 let app: FetchHandler;
 let db: ReturnType<typeof createTestDb>;
+let call: ReturnType<typeof makeCall>;
 
 beforeEach(() => {
-  db = createTestDb();
-  app = createApp({ db, secretKey: SECRET_KEY, executorToken: TOKEN });
+  const m = makeApp();
+  db = m.db;
+  app = m.app;
+  call = makeCall(app);
 });
-
-function call(
-  method: string,
-  path: string,
-  body?: unknown,
-  token: string | null = TOKEN,
-): Promise<Response> {
-  return app(
-    new Request(`http://localhost${path}`, {
-      method,
-      headers: {
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    }),
-  );
-}
 
 const JOB = {
   kind: "smoke_generate",
@@ -58,13 +41,19 @@ async function createAndLease() {
 
 describe("web api", () => {
   it("healthz は認証なし", async () => {
-    const res = await call("GET", "/api/healthz", undefined, null);
+    const res = await call("GET", "/api/healthz", undefined, {
+      token: null,
+    });
     expect(res.status).toBe(200);
   });
 
   it("認証なし/誤トークンは 401", async () => {
-    expect((await call("POST", "/api/jobs", JOB, null)).status).toBe(401);
-    expect((await call("POST", "/api/jobs", JOB, "wrong")).status).toBe(401);
+    expect(
+      (await call("POST", "/api/jobs", JOB, { token: null })).status,
+    ).toBe(401);
+    expect(
+      (await call("POST", "/api/jobs", JOB, { token: "wrong" })).status,
+    ).toBe(401);
   });
 
   it("ジョブ作成 → 冪等再作成", async () => {
@@ -149,7 +138,7 @@ describe("web api", () => {
     expect(body.job.lease_token).toBeNull();
   });
 
-  it("BYO キー: 登録 → 平文で取得できる往復 (応答に ciphertext なし)", async () => {
+  it("BYO キー: 登録 → resolve で復号 (応答に ciphertext なし)", async () => {
     const created = await call("POST", "/api/internal/keys", {
       owner_ref: "user-1",
       label: "main",
@@ -161,10 +150,64 @@ describe("web api", () => {
     };
     expect(key.ciphertext).toBeUndefined();
 
-    const got = await call("GET", `/api/internal/keys/${key.id}`);
-    expect(((await got.json()) as { api_key: string }).api_key).toBe(
+    // owner = job.user_ref が一致したら平文を返す
+    const { job } = (await (
+      await call("POST", "/api/jobs", {
+        kind: "smoke_generate",
+        payload: {},
+        idempotency_key: "k1",
+        user_ref: "user-1",
+      })
+    ).json()) as { job: { id: string } };
+    const resolved = await call(
+      "POST",
+      `/api/internal/keys/${key.id}/resolve`,
+      { job_id: job.id },
+    );
+    expect(resolved.status).toBe(200);
+    expect(((await resolved.json()) as { api_key: string }).api_key).toBe(
       "sk-test-123",
     );
+  });
+
+  it("resolve は owner 不一致だと 403", async () => {
+    const { key } = (await (
+      await call("POST", "/api/internal/keys", {
+        owner_ref: "user-1",
+        label: "l",
+        api_key: "sk",
+      })
+    ).json()) as { key: { id: string } };
+    const { job } = (await (
+      await call("POST", "/api/jobs", {
+        kind: "smoke_generate",
+        payload: {},
+        idempotency_key: "k2",
+        user_ref: "other-user",
+      })
+    ).json()) as { job: { id: string } };
+    expect(
+      (
+        await call("POST", `/api/internal/keys/${key.id}/resolve`, {
+          job_id: job.id,
+        })
+      ).status,
+    ).toBe(403);
+    // user_ref なしのジョブでも拒否
+    const { job: job2 } = (await (
+      await call("POST", "/api/jobs", {
+        kind: "smoke_generate",
+        payload: {},
+        idempotency_key: "k3",
+      })
+    ).json()) as { job: { id: string } };
+    expect(
+      (
+        await call("POST", `/api/internal/keys/${key.id}/resolve`, {
+          job_id: job2.id,
+        })
+      ).status,
+    ).toBe(403);
   });
 
   it("BYO キーの暗号文が復号できない場合は 500 (内容を漏らさない)", async () => {
@@ -177,7 +220,17 @@ describe("web api", () => {
     await db.run(
       sql`UPDATE provider_keys SET ciphertext = 'tampered' WHERE id = ${key.id}`,
     );
-    const res = await call("GET", `/api/internal/keys/${key.id}`);
+    const { job } = (await (
+      await call("POST", "/api/jobs", {
+        kind: "smoke_generate",
+        payload: {},
+        idempotency_key: "k4",
+        user_ref: "u",
+      })
+    ).json()) as { job: { id: string } };
+    const res = await call("POST", `/api/internal/keys/${key.id}/resolve`, {
+      job_id: job.id,
+    });
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: { message: string } };
     expect(body.error.message).not.toContain("sk");
@@ -186,5 +239,21 @@ describe("web api", () => {
   it("バリデーション失敗は 400", async () => {
     const res = await call("POST", "/api/jobs", { kind: "" });
     expect(res.status).toBe(400);
+  });
+
+  it("ユーザー向け API はセッションなしで 401", async () => {
+    for (const path of ["/api/me", "/api/works", "/api/keys"]) {
+      const res = await call("GET", path, undefined, { token: null });
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it("dev-login が無効なら 404", async () => {
+    const m = makeApp({ devLogin: false });
+    const c = makeCall(m.app);
+    const res = await c("POST", "/api/dev/login", undefined, {
+      token: null,
+    });
+    expect(res.status).toBe(404);
   });
 });

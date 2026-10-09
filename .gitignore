@@ -7,3 +7,5 @@ dist/
 coverage/
 *.log
 .DS_Store
+.react-router/
+build/
