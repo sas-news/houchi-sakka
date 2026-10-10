@@ -15,7 +15,9 @@
     "typecheck": "react-router typegen && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "dev": "vite dev",
-    "d1:migrate": "wrangler d1 migrations apply houchi-sakka"
+    "d1:migrate": "wrangler d1 migrations apply houchi-sakka",
+    "d1:migrate:prod": "wrangler d1 migrations apply houchi-sakka --remote --config wrangler.production.toml",
+    "deploy:prod": "wrangler deploy --config wrangler.production.toml"
   },
   "dependencies": {
     "@houchi/contracts": "workspace:*",
