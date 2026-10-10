@@ -129,20 +129,22 @@ export default function KeysPage({
       <div className="card">
         <h2>登録済みのキー</h2>
         {loaderData.keys.length === 0 ? (
-          <p className="muted">登録済みのキーはありません。</p>
+          <div className="empty">登録済みのキーはありません。</div>
         ) : (
           loaderData.keys.map((k: KeyInfo) => (
-            <div className="card" key={k.id}>
-              <p>
-                <strong>{k.label}</strong> (
-                {PROVIDER_LABEL[k.provider] ?? k.provider})
-              </p>
-              <p className="muted">
-                登録日: {new Date(k.created_at).toLocaleString("ja-JP")}
-              </p>
+            <div className="key-row" key={k.id}>
+              <div className="key-info">
+                <span className="key-name">{k.label}</span>{" "}
+                <span className="key-provider">
+                  {PROVIDER_LABEL[k.provider] ?? k.provider}
+                </span>
+                <div className="key-date">
+                  登録日: {new Date(k.created_at).toLocaleString("ja-JP")}
+                </div>
+              </div>
               <button
                 type="button"
-                className="danger"
+                className="danger btn-sm"
                 onClick={() => void remove(k.id, k.label)}
               >
                 削除

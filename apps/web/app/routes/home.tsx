@@ -14,6 +14,11 @@ const STATUS_LABEL: Record<WorkInfo["status"], string> = {
   active: "進行中",
 };
 
+const STATUS_BADGE: Record<WorkInfo["status"], string> = {
+  setup: "badge badge--warn",
+  active: "badge badge--ok",
+};
+
 export async function loader({
   context,
   request,
@@ -52,21 +57,23 @@ export default function Home({
       <h1>作品一覧</h1>
       <p className="muted">{loaderData.user.name} としてログイン中</p>
       {loaderData.works.length === 0 ? (
-        <div className="card">
-          <p>まだ作品がありません。最初の作品を作りましょう。</p>
+        <div className="empty">
+          まだ作品がありません。最初の作品を作りましょう。
         </div>
       ) : (
         loaderData.works.map((w) => (
-          <div className="card" key={w.id}>
-            <h2>
-              <Link to={`/works/${w.id}`}>{w.title}</Link>
-            </h2>
-            <p className="muted">
-              {STATUS_LABEL[w.status]} / 更新:{" "}
-              {new Date(w.updated_at).toLocaleString("ja-JP")}
-            </p>
+          <Link className="card work-card" key={w.id} to={`/works/${w.id}`}>
+            <h2>{w.title}</h2>
+            <div className="card-meta">
+              <span className={STATUS_BADGE[w.status]}>
+                {STATUS_LABEL[w.status]}
+              </span>
+              <span>
+                更新: {new Date(w.updated_at).toLocaleString("ja-JP")}
+              </span>
+            </div>
             {w.premise ? <p>{w.premise}</p> : null}
-          </div>
+          </Link>
         ))
       )}
       <div className="form-actions">
