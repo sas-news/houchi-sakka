@@ -1,0 +1,29 @@
+# apps/runner (常駐実行体) の Fly.io 設定スケルトン。
+# Workers には載らない常駐プロセスなので Fly.io Machines で動かす想定。
+#
+# 手順 (リポジトリルートで実行):
+#   fly apps create houchi-sakka-runner        # 初回のみ
+#   fly secrets set WEB_BASE_URL=https://houchi-sakka-web.<account>.workers.dev \
+#                   EXECUTOR_TOKEN=<web側と同じトークン>
+#   fly deploy                                 # Docker build context = リポジトリルート
+#
+# Render / 他の Docker ホストでも apps/runner/Dockerfile をルートコンテキストで
+# ビルドすればそのまま動く (公開ポートは不要)。
+
+app = "houchi-sakka-runner"   # fly apps create で作ったアプリ名に合わせる
+primary_region = "nrt"        # 東京リージョン (好みで変更)
+
+[build]
+  dockerfile = "apps/runner/Dockerfile"
+
+# 公開 HTTP サービスは持たないワーカー ([services] セクションなし)
+
+[env]
+  POLL_INTERVAL_MS = "2000"
+  LEASE_TTL_MS = "120000"
+  # EXECUTOR_ID は未設定なら hostname+pid で自動採番
+  # RUNNER_PROVIDER は設定しない (=openai。stub はスモーク用)
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,48 @@
+# 本番デプロイ用設定 (ローカル開発の wrangler.toml とは別管理)。
+#
+#   ビルド:   pnpm -r build  (react-router build → build/server, build/client)
+#   デプロイ: pnpm deploy:prod
+#   secrets:  pnpm exec wrangler secret put <NAME> --config wrangler.production.toml
+#
+# main は「ビルド済みバンドル」を指す。workers/app.ts を直接指定すると
+# wrangler 内蔵 esbuild が virtual:react-router/server-build を解決できず
+# 失敗するため、no_bundle + rules で vite の出力をそのままアップロードする。
+
+name = "houchi-sakka-web"
+main = "./build/server/index.js"
+no_bundle = true
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# no_bundle 時は rules で追加モジュールを明示しないと
+# build/server/assets/ の分割チャンクがアップロードされず起動失敗する
+rules = [{ type = "ESModule", globs = ["**/*.js", "**/*.mjs"] }]
+
+# React Router のクライアント成果物 (静的アセット)
+[assets]
+directory = "./build/client/"
+binding = "ASSETS"
+
+# 秘密でない環境変数は [vars]。secret は `wrangler secret put` で入れる
+# (toml に平文を書かない)。
+[vars]
+# orchestrator_turn の既定モデル (ジョブ payload でモデル未指定の時)
+DEFAULT_MODEL = "gpt-4o-mini"
+
+# --- `wrangler secret put` で入れるもの ---
+# APP_SECRET_KEY        AES-256-GCM 鍵 + better-auth の secret (openssl rand -base64 32)
+# EXECUTOR_TOKEN        実行体(Runner)と共有する Bearer トークン
+# GOOGLE_CLIENT_ID      OAuth 用 (任意。未設定ならログインボタン非表示)
+# GOOGLE_CLIENT_SECRET  OAuth 用 (任意)
+# GITHUB_CLIENT_ID      OAuth 用 (任意)
+# GITHUB_CLIENT_SECRET  OAuth 用 (任意)
+#
+# DEV_LOGIN_ENABLED は本番では絶対に設定しない
+# (誰でも /api/dev/login でログインできる抜け道になる)
+
+[[d1_databases]]
+binding = "DB"
+database_name = "houchi-sakka"
+# `pnpm exec wrangler d1 create houchi-sakka` で発行された ID に書き換える
+database_id = "REPLACE_WITH_PRODUCTION_DATABASE_ID"
+migrations_dir = "../../packages/database/migrations"
