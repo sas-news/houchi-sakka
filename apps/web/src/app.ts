@@ -315,6 +315,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             ownerRef: user.id,
             title: body.title,
             ...(body.premise !== undefined ? { premise: body.premise } : {}),
+            model: deps.defaultModel,
             ...(defaultKey
               ? { provider: defaultKey.provider, keyRef: defaultKey.id }
               : {}),

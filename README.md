@@ -123,23 +123,23 @@ pnpm -r test
    ```bash
    cd apps/web
    pnpm exec wrangler d1 migrations apply houchi-sakka --local
-   pnpm dev   # http://localhost:8787 (vite dev)
+   pnpm dev   # http://localhost:5173 (vite dev)
    ```
 
 4. 別ターミナルで runner を stub モードで起動
 
    ```bash
    cd apps/runner
-   WEB_BASE_URL=http://localhost:8787 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
+   WEB_BASE_URL=http://localhost:5173 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
      pnpm start
 
    # Phase 1b シナリオ (対話→提案→承認→本文生成) を stub で回す場合:
    #   STUB_SCENARIO=phase1b を足す
-   WEB_BASE_URL=http://localhost:8787 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
+   WEB_BASE_URL=http://localhost:5173 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
      STUB_SCENARIO=phase1b pnpm start
    ```
 
-5. ブラウザで http://localhost:8787 を開く
+5. ブラウザで http://localhost:5173 を開く
 
    「開発用ログイン」→ APIキー設定でキー登録 (provider: OpenAI、値は `sk-dummy` 等でよい — stub runner は使わない) → 「新しい作品を作る」→ 対話画面で送信 → 数秒で stub の返答が流れる。
 

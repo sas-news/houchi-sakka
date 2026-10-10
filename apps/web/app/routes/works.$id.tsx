@@ -693,9 +693,13 @@ export default function WorkPage({
           <form onSubmit={(e) => void saveSettings(e)} className="card">
             <h2>生成設定</h2>
             <label htmlFor="key_id">APIキー</label>
+            {/* keys は非同期取得のため、読み込み完了＋key_ref 変化で
+                再マウントして値を同期する (uncontrolled のままズレると
+                保存時に key_ref が消えるバグになる) */}
             <select
               id="key_id"
               name="key_id"
+              key={`${keys === null}:${work.key_ref ?? ""}`}
               defaultValue={work.key_ref ?? ""}
             >
               <option value="">(未選択)</option>
