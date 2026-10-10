@@ -26,6 +26,7 @@ const WORK: Work = {
   provider: null,
   model: null,
   key_ref: null,
+  canon_rev: 0,
   created_at: 0,
   updated_at: 0,
 };
@@ -141,6 +142,7 @@ function makeCtx(opts: {
         content_json: req.content_json,
         source: req.source,
         job_id: req.job_id,
+        change_set_id: null,
         created_at: opts.revisions.length + 1,
       };
       opts.revisions.push(rev);
@@ -168,6 +170,8 @@ function sceneCtx(contract: WritingContract | null): SceneContextData {
       work_id: "w1",
       statement: "汽車はもう走っていない",
       provenance: "orchestrator",
+      valid_from_rev: 0,
+      valid_to_rev: null,
       created_at: 0,
     },
   ];

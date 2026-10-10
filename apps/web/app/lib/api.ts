@@ -1,7 +1,9 @@
 import type {
+  ChangeSetInfo,
   JobInfo,
   KeyInfo,
   ProposalInfo,
+  ReviewFindingInfo,
   SceneRevisionInfo,
   WorkDetail,
   WorkInfo,
@@ -70,4 +72,24 @@ export const api = {
     workId: string,
     input: { key_id?: string | null; model?: string },
   ) => call<{ work: WorkInfo }>(`/api/works/${workId}/settings`, "PATCH", input),
+  getChanges: (id: string) =>
+    call<{ change_sets: ChangeSetInfo[] }>(`/api/works/${id}/changes`),
+  /** 変更セットの承認 (force=true で却下済み含め強制適用)。 */
+  approveChangeSet: (id: string, force = false) =>
+    call<{ change_set: ChangeSetInfo; job: JobInfo | null }>(
+      `/api/change-sets/${id}/approve`,
+      "POST",
+      { force },
+    ),
+  rejectChangeSet: (id: string) =>
+    call<{ change_set: ChangeSetInfo }>(
+      `/api/change-sets/${id}/reject`,
+      "POST",
+    ),
+  setFindingStatus: (id: string, status: "open" | "dismissed") =>
+    call<{ finding: ReviewFindingInfo }>(
+      `/api/review-findings/${id}/status`,
+      "POST",
+      { status },
+    ),
 };

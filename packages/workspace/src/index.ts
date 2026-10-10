@@ -7,7 +7,8 @@
 //
 // パス写像:
 //   /work.json                     title/premise/genre/status/charter/policy
-//   /canon/facts.md                canon_facts を箇条書きで
+//   /canon/facts.md                現行の canon_facts を箇条書きで (+ 改訂履歴件数)
+//   /canon/history.md              全履歴行 (現行+閉じた) を rev 表示付きで
 //   /plan/tree.md                  episodes→scenes の状態付きツリー
 //   /contracts/<scene_id>.json     その scene の最新 Writing Contract
 //   /scenes/<ep_ord>-<scene_ord>.md 最新リビジョン本文 (プレーンテキスト)
@@ -28,6 +29,7 @@ import {
   getLatestContractByScene,
   getSceneById,
   getThreadByWorkId,
+  listAllCanonFactsByWork,
   listCanonFactsByWork,
   listEpisodesByWork,
   listRevisionsByScene,
@@ -37,6 +39,7 @@ import {
 
 export const PATH_WORK_JSON = "/work.json" as const;
 export const PATH_CANON_FACTS = "/canon/facts.md" as const;
+export const PATH_CANON_HISTORY = "/canon/history.md" as const;
 export const PATH_PLAN_TREE = "/plan/tree.md" as const;
 
 const CONTRACT_PATH_RE = /^\/contracts\/(.+)\.json$/;
@@ -89,16 +92,44 @@ export async function buildPlanTree(db: DbLike, workId: string): Promise<string>
   return lines.join("\n");
 }
 
-/** /canon/facts.md の内容を生成する。 */
+/**
+ * /canon/facts.md の内容を生成する。
+ * 現行行 (valid_to_rev IS NULL) のみ + 末尾に改訂履歴の件数注記 (spec §6.3)。
+ */
 export async function buildCanonFactsMd(
   db: DbLike,
   workId: string,
 ): Promise<string> {
   const facts = await listCanonFactsByWork(db, workId);
+  const all = await listAllCanonFactsByWork(db, workId);
+  const closed = all.length - facts.length;
   if (facts.length === 0) {
-    return "(正典メモはまだありません)";
+    return closed > 0
+      ? `(正典メモはまだありません)\n\n--- (改訂履歴: ${closed}件)`
+      : "(正典メモはまだありません)";
   }
-  return facts.map((f) => `- ${f.statement}`).join("\n");
+  const body = facts.map((f) => `- ${f.statement}`).join("\n");
+  return closed > 0 ? `${body}\n\n--- (改訂履歴: ${closed}件)` : body;
+}
+
+/** /canon/history.md: 全履歴行を rev 表示付きで (Phase 2b, spec §6.3)。 */
+export async function buildCanonHistoryMd(
+  db: DbLike,
+  workId: string,
+): Promise<string> {
+  const all = await listAllCanonFactsByWork(db, workId);
+  if (all.length === 0) {
+    return "(正典メモの改訂履歴はまだありません)";
+  }
+  return all
+    .map((f) => {
+      const from = f.valid_from_rev === null ? "初期" : `rev${f.valid_from_rev}`;
+      const to =
+        f.valid_to_rev === null ? "現行" : `rev${f.valid_to_rev} で廃止`;
+      const status = f.valid_to_rev === null ? "" : " (廃止)";
+      return `- [${from}〜${to}] ${f.statement}${status}`;
+    })
+    .join("\n");
 }
 
 /** /work.json の内容を生成する。 */
@@ -136,6 +167,10 @@ export async function listFiles(
       summary: `正典メモ ${facts.length}件`,
     },
     {
+      path: PATH_CANON_HISTORY,
+      summary: "正典メモの改訂履歴",
+    },
+    {
       path: PATH_PLAN_TREE,
       summary: `計画ツリー (シーン ${items.length}件)`,
     },
@@ -168,6 +203,9 @@ export async function readFile(
   }
   if (path === PATH_CANON_FACTS) {
     return { path, content: await buildCanonFactsMd(db, work.id) };
+  }
+  if (path === PATH_CANON_HISTORY) {
+    return { path, content: await buildCanonHistoryMd(db, work.id) };
   }
   if (path === PATH_PLAN_TREE) {
     return { path, content: await buildPlanTree(db, work.id) };

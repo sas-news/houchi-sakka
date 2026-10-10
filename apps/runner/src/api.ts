@@ -3,7 +3,10 @@ import type {
   AppendMessageRequest,
   AppendMessageResponse,
   CanonFactsResponse,
+  ChangeSetContextResponse,
+  ChangeSetResponse,
   CompleteRequest,
+  CreateChangeSetRequest,
   CreateJobRequest,
   CreateJobResponse,
   CreateKeyRequest,
@@ -19,6 +22,8 @@ import type {
   ProgressResponse,
   ProposalResponse,
   RecordDependenciesRequest,
+  RecordReviewFindingsRequest,
+  RecordReviewFindingsResponse,
   DependencyEdgesResponse,
   ResolveKeyRequest,
   ResolveKeyResponse,
@@ -142,6 +147,25 @@ export class ApiClient {
     return this.call(
       "POST",
       `/api/internal/scenes/${sceneId}/dependencies`,
+      req,
+    );
+  }
+  createChangeSet(
+    workId: string,
+    req: CreateChangeSetRequest,
+  ): Promise<ChangeSetResponse> {
+    return this.call("POST", `/api/internal/works/${workId}/change-sets`, req);
+  }
+  getChangeSetContext(id: string): Promise<ChangeSetContextResponse> {
+    return this.call("GET", `/api/internal/change-sets/${id}/context`);
+  }
+  recordReviewFindings(
+    changeSetId: string,
+    req: RecordReviewFindingsRequest,
+  ): Promise<RecordReviewFindingsResponse> {
+    return this.call(
+      "POST",
+      `/api/internal/change-sets/${changeSetId}/findings`,
       req,
     );
   }

@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
+  ChangeSetOpSchema,
   ProposeScenePayloadSchema,
   WorkPatchRequestSchema,
+  type ChangeSetOp,
   type ChatMessage,
   type ProviderInputMessage,
   type Work,
@@ -29,6 +31,12 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 - 過去の決定と矛盾する希望が来た場合、黙って上書きせず、どの決定が変わるかを説明する。
 - 作品の体裁(タイトル・前提・ジャンル)が対話で固まったと判断したときだけ、下記の WORK_PATCH 行で更新を提案する。
 - 対話から得られた創作上の確定事項(設定・キャラ・世界観など)は CANON_FACTS 行で正典メモとして記録する。
+- 記録済みの正典や作品の設定を変えたい・廃止したい場合、勝手に書き換えず CHANGESET 行で変更セットを提案する。既存の正典メモを直す時は必ずこちらを使う (CANON_FACTS は新規追加専用)。
+
+変更の提案 (CHANGESET):
+- 変更セットは作者の承認後にだけ適用される。影響しそうなシーン・契約は影響分析で示されるので、提案文には「何をなぜ変えるか」を書く。
+- ops の語彙: {"op": "retire_fact", "fact_id": "…"} (正典を廃止) / {"op": "revise_fact", "fact_id": "…", "new_statement": "…"} (正典を書き換え) / {"op": "add_fact", "statement": "…"} (正典を追加) / {"op": "update_work", "patch": {"title"?: "…", "premise"?: "…", "genre"?: "…", "charter"?: {…}, "policy"?: {…}}} (作品の構造情報を変更)。
+- fact_id は「記録済みの正典メモ」に [fact_id: …] で示されるものを使う。
 
 本文生成の提案 (PROPOSE):
 - 作者が本文を書きたい意思を示し、かつシーンの目的・視点・必須イベントなどの契約要素が対話で揃ったときだけ、PROPOSE 行で「話+シーン+Writing Contract」の提案を出す。契約要素が足りない場合は提案せず、不足分を質問して固める。
@@ -47,10 +55,12 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 <<CANON_FACTS ["確定した設定や決定事項", "…"]>>
 <<PROPOSE {"episode_title": "第1話", "scene_title": "…", "scene_purpose": "…", "contract": {"role": "…", "pov": "…", "required_events": ["…"], "forbidden": ["…"], "knowledge_notes": "…", "connections": "…"}}>>
 <<RUN_PLAN {"guidance": "…"}>>
+<<CHANGESET {"title": "…", "description": "…", "ops": [{"op": "revise_fact", "fact_id": "…", "new_statement": "…"}]}>>
 - WORK_PATCH: 更新しないフィールドは省略。更新がなければ行自体を出さない。status には "setup" または "active" だけが使える。
 - CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。
 - PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。
-- RUN_PLAN: 引数は省略可。計画したいときだけ出す。`;
+- RUN_PLAN: 引数は省略可。計画したいときだけ出す。
+- CHANGESET: 既存の正典・作品設定の変更を提案するときだけ出す。description は省略可。`;
 
 /** WORK_PATCH 行のマーカー。返答最終行のみをパース対象にする。 */
 const WORK_PATCH_LINE = /^<<WORK_PATCH\s+(.+?)>>$/;
@@ -86,7 +96,8 @@ export function parseWorkPatch(outputText: string): {
 export function buildOrchestratorInput(input: {
   work: Work;
   messages: ChatMessage[];
-  canonFacts?: string[];
+  /** 正典メモ (fact_id つき。CHANGESET の ops が参照する)。 */
+  canonFacts?: { id: string; statement: string }[];
   pendingProposals?: string[];
   /** workspace のファイル一覧 (一覧+要約のみ。中身は載せない)。 */
   workspaceFiles?: { path: string; summary: string }[];
@@ -107,7 +118,7 @@ export function buildOrchestratorInput(input: {
   if (input.canonFacts && input.canonFacts.length > 0) {
     lines.push(
       "記録済みの正典メモ:",
-      ...input.canonFacts.map((f) => `- ${f}`),
+      ...input.canonFacts.map((f) => `- [fact_id: ${f.id}] ${f.statement}`),
     );
   }
   if (input.pendingProposals && input.pendingProposals.length > 0) {
@@ -161,12 +172,28 @@ export type ProposeMarker = {
  * マーカーは応答の末尾にのみ有効とし、連続するマーカー行を順不同で読む。
  * いずれも JSON が壊れていた場合はそのマーカーを捨てて本文に残す。
  */
+/** 応答の末尾行の `<<CHANGESET {…}>>` マーカー (Phase 2b, spec §5)。 */
+export const CHANGESET_LINE = /^<<CHANGESET\s+(.+?)>>$/;
+
+/** CHANGESET マーカーの中身 (ops は ChangeSetOp の語彙)。 */
+export const ChangeSetMarkerSchema = z.object({
+  title: z.string().min(1).max(500),
+  description: z.string().max(20000).default(""),
+  ops: z.array(ChangeSetOpSchema).min(1).max(100),
+});
+export type ChangeSetMarker = z.infer<typeof ChangeSetMarkerSchema>;
+
 export function parseOrchestratorMarkers(text: string): {
   cleanText: string;
   patch: WorkPatchRequest | null;
   proposal: ProposeMarker | null;
   canonFacts: string[];
   runPlan: RunPlanMarker | null;
+  changeSet: {
+    title: string;
+    description: string;
+    ops: ChangeSetOp[];
+  } | null;
 } {
   const lines = text.split("\n");
   let end = lines.length;
@@ -174,6 +201,7 @@ export function parseOrchestratorMarkers(text: string): {
   const proposals: ProposeMarker[] = [];
   const factLists: string[][] = [];
   let runPlan: RunPlanMarker | null = null;
+  const changeSets: ChangeSetMarker[] = [];
 
   // 末尾の連続するマーカー行を後ろから読む
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -221,6 +249,18 @@ export function parseOrchestratorMarkers(text: string): {
         break;
       }
     }
+    const changeSetMatch = line.match(CHANGESET_LINE);
+    if (changeSetMatch) {
+      try {
+        changeSets.unshift(
+          ChangeSetMarkerSchema.parse(JSON.parse(changeSetMatch[1]!)),
+        );
+        end = i;
+        continue;
+      } catch {
+        break;
+      }
+    }
     const runPlanMatch = line.match(RUN_PLAN_LINE);
     if (runPlanMatch) {
       // JSON 引数は省略可。壊れた JSON はマーカーごと捨てる。
@@ -245,12 +285,15 @@ export function parseOrchestratorMarkers(text: string): {
   }
 
   const cleanText = lines.slice(0, end).join("\n").trimEnd();
+  const cs =
+    changeSets.length > 0 ? changeSets[changeSets.length - 1]! : null;
   return {
     cleanText,
     patch: patches.length > 0 ? patches[patches.length - 1]! : null,
     proposal: proposals.length > 0 ? proposals[proposals.length - 1]! : null,
     canonFacts: factLists.flat(),
     runPlan,
+    changeSet: cs,
   };
 }
 

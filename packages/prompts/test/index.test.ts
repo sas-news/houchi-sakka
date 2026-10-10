@@ -55,6 +55,7 @@ describe("buildOrchestratorInput", () => {
     provider: null,
     model: null,
     key_ref: null,
+    canon_rev: 0,
     created_at: 0,
     updated_at: 0,
   };
