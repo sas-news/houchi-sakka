@@ -21,6 +21,7 @@
     "@houchi/contracts": "workspace:*",
     "@houchi/database": "workspace:*",
     "@houchi/secrets": "workspace:*",
+    "@houchi/workspace": "workspace:*",
     "better-auth": "^1.7.7",
     "drizzle-orm": "^0.44.5",
     "isbot": "^5.2.2",

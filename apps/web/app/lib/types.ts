@@ -76,6 +76,12 @@ export interface ProposalInfo {
     episode_id?: string;
     scene_id?: string;
     contract_id?: string;
+    /** kind="plan": 計画の話・シーン構成案。 */
+    episodes?: { title: string; scenes: { title: string; purpose?: string }[] }[];
+    /** kind="workspace_write": 書き込み先パスと内容。 */
+    path?: string;
+    content?: string;
+    supported?: boolean;
   };
   status: "pending" | "approved" | "rejected";
   decided_at: number | null;
@@ -148,4 +154,10 @@ export interface WorkProse {
   revisions: SceneRevisionInfo[];
   contracts: WritingContractInfo[];
   canon_facts: CanonFactInfo[];
+}
+
+/** 資料タブ: workspace 仮想ファイル。 */
+export interface WorkspaceFileInfo {
+  path: string;
+  summary: string;
 }

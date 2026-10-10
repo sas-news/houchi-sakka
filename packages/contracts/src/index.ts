@@ -12,6 +12,7 @@ import { z } from "zod";
 export const JOB_KIND_SMOKE_GENERATE = "smoke_generate" as const;
 export const JOB_KIND_ORCHESTRATOR_TURN = "orchestrator_turn" as const;
 export const JOB_KIND_GENERATE_SCENE = "generate_scene" as const;
+export const JOB_KIND_PLAN_WORK = "plan_work" as const;
 
 /** ジョブ種別。拡張前提の文字列型。 */
 export const JobKindSchema = z.string().min(1);
@@ -417,10 +418,19 @@ export type OrchestratorTurnResult = z.infer<typeof OrchestratorTurnResultSchema
 
 export const GenerateSceneCheckpointSchema = z
   .object({
-    /** persist 済みのプロバイダー応答 (生成本文)。 */
-    provider_result: ProviderResponseSchema.optional(),
+    /** write 段のスキル出力 (WriterOutput, Phase 2a 多段パイプライン)。 */
+    draft: z.unknown().optional(),
+    /** critique 段のスキル出力 (CriticOutput)。 */
+    critique: z.unknown().optional(),
+    /** revise 段のスキル出力 (改稿後 WriterOutput)。 */
+    final: z.unknown().optional(),
     /** 永続化済みの scene_revisions.id。 */
     revision_id: z.string().optional(),
+    rev_no: z.number().int().optional(),
+    /** canon_facts_new の記録済みフラグ。 */
+    canon_recorded: z.boolean().optional(),
+    /** dependency_edges の記録済みフラグ。 */
+    deps_recorded: z.boolean().optional(),
   })
   .passthrough();
 export type GenerateSceneCheckpoint = z.infer<
@@ -449,8 +459,55 @@ export const GenerateSceneResultSchema = z.object({
   revision_id: z.string(),
   rev_no: z.number().int(),
   resumed_from_checkpoint: z.boolean(),
+  /** high 指摘があって revise 段を回したか。 */
+  revised: z.boolean(),
+  /** critic の検査結果サマリ。 */
+  critique_summary: z.object({
+    high: z.number().int(),
+    medium: z.number().int(),
+    low: z.number().int(),
+    notes: z.number().int(),
+  }),
 });
 export type GenerateSceneResult = z.infer<typeof GenerateSceneResultSchema>;
+
+// ---------------------------------------------------------------------------
+// plan_work ジョブ (Phase 2a, spec §7.1 プランナー)
+// ---------------------------------------------------------------------------
+
+export const PlanWorkCheckpointSchema = z
+  .object({
+    /** planner スキルの検証済み出力 (PlanProposalPayload)。 */
+    plan: z.unknown().optional(),
+    /** 永続化済みの assistant メッセージ ID。 */
+    assistant_message_id: z.string().optional(),
+    /** 作成済みの plan 提案 ID。 */
+    proposal_id: z.string().optional(),
+  })
+  .passthrough();
+export type PlanWorkCheckpoint = z.infer<typeof PlanWorkCheckpointSchema>;
+
+export const PlanWorkPayloadSchema = z.object({
+  work_id: z.string().min(1),
+  /** 計画提案カードを出すスレッド (assistant メッセージの追加先)。 */
+  thread_id: z.string().min(1),
+  user_ref: z.string().min(1),
+  key_ref: z.string().min(1),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  /** 対話からの計画指示 (焦点・範囲など)。 */
+  guidance: z.string().optional(),
+  checkpoint: PlanWorkCheckpointSchema.optional(),
+});
+export type PlanWorkPayload = z.infer<typeof PlanWorkPayloadSchema>;
+
+export const PlanWorkResultSchema = z.object({
+  kind: z.literal(JOB_KIND_PLAN_WORK),
+  proposal_id: z.string(),
+  episode_count: z.number().int(),
+  scene_count: z.number().int(),
+});
+export type PlanWorkResult = z.infer<typeof PlanWorkResultSchema>;
 
 // ---------------------------------------------------------------------------
 // API: ユーザー向け (セッション認証)
@@ -562,6 +619,10 @@ export type CanonFact = z.infer<typeof CanonFactSchema>;
 
 /** チャット内承認カードの種別。 */
 export const PROPOSAL_KIND_WRITING_CONTRACT = "writing_contract" as const;
+/** plan_work が作る計画提案 (episodes/scenes の一括作成案)。 */
+export const PROPOSAL_KIND_PLAN = "plan" as const;
+/** workspace 経由の書き込み提案 (監査。直接確定しない)。 */
+export const PROPOSAL_KIND_WORKSPACE_WRITE = "workspace_write" as const;
 export const ProposalStatusSchema = z.enum([
   "pending",
   "approved",
@@ -592,6 +653,121 @@ export const ProposeScenePayloadSchema = z.object({
   contract: WritingContractPayloadSchema,
 });
 export type ProposeScenePayload = z.infer<typeof ProposeScenePayloadSchema>;
+
+/** kind="plan" 提案の payload (planner スキルの出力)。 */
+export const PlanSceneInputSchema = z.object({
+  title: z.string().min(1),
+  purpose: z.string().default(""),
+});
+export const PlanEpisodeInputSchema = z.object({
+  title: z.string().min(1),
+  scenes: z.array(PlanSceneInputSchema),
+});
+export const PlanProposalPayloadSchema = z.object({
+  episodes: z.array(PlanEpisodeInputSchema),
+});
+export type PlanProposalPayload = z.infer<typeof PlanProposalPayloadSchema>;
+
+// ---------------------------------------------------------------------------
+// DependencyEdge (Phase 2a, spec §6.1/§6.4: 依存宣言の主経路)
+// ---------------------------------------------------------------------------
+
+export const DependencyEdgeSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  scene_id: z.string(),
+  /** 依存先の種別 (canon_fact | plan | scene | contract …)。 */
+  target_kind: z.string(),
+  /** 依存先の参照 (事実文・計画タイトル等、宣言側の言い方のまま)。 */
+  target_ref: z.string(),
+  created_at: z.number(),
+});
+export type DependencyEdge = z.infer<typeof DependencyEdgeSchema>;
+
+export const DependencyEdgeInputSchema = z.object({
+  target_kind: z.string().min(1),
+  target_ref: z.string().min(1),
+});
+export type DependencyEdgeInput = z.infer<typeof DependencyEdgeInputSchema>;
+
+/** POST /api/internal/scenes/:id/dependencies — writer の依存宣言の記録。 */
+export const RecordDependenciesRequestSchema = z.object({
+  edges: z.array(DependencyEdgeInputSchema).max(100),
+});
+export type RecordDependenciesRequest = z.infer<
+  typeof RecordDependenciesRequestSchema
+>;
+
+export const DependencyEdgesResponseSchema = z.object({
+  edges: z.array(DependencyEdgeSchema),
+  /** 実際に追加された件数 (重複スキップ後)。 */
+  added: z.number().int(),
+});
+export type DependencyEdgesResponse = z.infer<
+  typeof DependencyEdgesResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// Workspace 仮想FS (Phase 2a, spec §7.1 コンテキスト担当の窓口)
+// ---------------------------------------------------------------------------
+
+/** 作品データを仮想ファイルとして公開する一覧エントリ。 */
+export const WorkspaceFileSchema = z.object({
+  path: z.string(),
+  /** 内容を載せない要約 (サイズ・件数・タイトル程度)。 */
+  summary: z.string(),
+});
+export type WorkspaceFile = z.infer<typeof WorkspaceFileSchema>;
+
+export const WorkspaceFilesResponseSchema = z.object({
+  files: z.array(WorkspaceFileSchema),
+});
+export type WorkspaceFilesResponse = z.infer<
+  typeof WorkspaceFilesResponseSchema
+>;
+
+export const WorkspaceFileContentSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+});
+export type WorkspaceFileContent = z.infer<typeof WorkspaceFileContentSchema>;
+
+/** POST /api/internal/works/:id/workspace/write — エージェントの書き込み提案。 */
+export const WorkspaceWriteRequestSchema = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+  /** 提案者 (job 名・スキル名などの出所記録)。 */
+  provenance: z.string().min(1),
+});
+export type WorkspaceWriteRequest = z.infer<typeof WorkspaceWriteRequestSchema>;
+
+export const WorkspaceWriteResponseSchema = z.object({
+  proposal: ProposalSchema,
+  /** apply 対応パスか (false=記録のみ)。 */
+  supported: z.boolean(),
+});
+export type WorkspaceWriteResponse = z.infer<
+  typeof WorkspaceWriteResponseSchema
+>;
+
+/** kind="plan" の承認応答。 */
+export const ApprovePlanProposalResponseSchema = z.object({
+  proposal: ProposalSchema,
+  episodes: z.array(EpisodeSchema),
+  scenes: z.array(SceneSchema),
+});
+export type ApprovePlanProposalResponse = z.infer<
+  typeof ApprovePlanProposalResponseSchema
+>;
+
+/** kind="workspace_write" の承認応答 (正典メモへの追記件数)。 */
+export const ApproveWorkspaceWriteResponseSchema = z.object({
+  proposal: ProposalSchema,
+  added: z.number().int(),
+});
+export type ApproveWorkspaceWriteResponse = z.infer<
+  typeof ApproveWorkspaceWriteResponseSchema
+>;
 
 // ---------------------------------------------------------------------------
 
@@ -691,6 +867,10 @@ export const ThreadContextResponseSchema = z.object({
   canon_facts: z.array(CanonFactSchema),
   /** 未決定の提案 (pending のみ)。 */
   proposals: z.array(ProposalSchema),
+  /** workspace のファイル一覧 (エージェントが見ている景色。一覧+要約のみ)。 */
+  workspace_files: z.array(WorkspaceFileSchema),
+  /** /plan/tree.md の内容 (planner の入力にも使う)。 */
+  plan_tree: z.string(),
 });
 export type ThreadContextResponse = z.infer<typeof ThreadContextResponseSchema>;
 

@@ -5,6 +5,7 @@ import {
   ChatMessageSchema,
   ChatRoleSchema,
   ChatThreadSchema,
+  DependencyEdgeSchema,
   EpisodeSchema,
   JobStatusSchema,
   ProgressEventSchema,
@@ -21,6 +22,8 @@ import {
   type ChatMessage,
   type ChatRole,
   type ChatThread,
+  type DependencyEdge,
+  type DependencyEdgeInput,
   type Episode,
   type JobStatus,
   type ProgressEvent,
@@ -649,6 +652,8 @@ export type {
   ChatMessage,
   ChatRole,
   ChatThread,
+  DependencyEdge,
+  DependencyEdgeInput,
   Episode,
   JobStatus,
   ProgressEvent,
@@ -1075,4 +1080,68 @@ export async function getEpisodeById(
     sql`SELECT * FROM episodes WHERE id = ${id}`,
   )) as Row | undefined;
   return r ? rowToEpisode(r) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2a: dependency_edges (writer の依存宣言の記録先, spec §6.4)
+// ---------------------------------------------------------------------------
+
+function rowToDependencyEdge(r: Row): DependencyEdge {
+  return DependencyEdgeSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    scene_id: r.scene_id,
+    target_kind: r.target_kind,
+    target_ref: r.target_ref,
+    created_at: r.created_at,
+  });
+}
+
+/** 依存宣言を記録。(scene_id,target_kind,target_ref) の完全一致は重複スキップ。 */
+export async function addDependencyEdges(
+  db: DbLike,
+  input: {
+    workId: string;
+    sceneId: string;
+    edges: DependencyEdgeInput[];
+  },
+): Promise<{ edges: DependencyEdge[]; added: number }> {
+  let added = 0;
+  for (const e of input.edges) {
+    const rows = (await db.all(sql`
+      INSERT INTO dependency_edges
+        (id, work_id, scene_id, target_kind, target_ref, created_at)
+      VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.sceneId},
+              ${e.target_kind}, ${e.target_ref}, ${now()})
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `)) as Row[];
+    added += rows.length;
+  }
+  return {
+    edges: await listDependencyEdgesByScene(db, input.sceneId),
+    added,
+  };
+}
+
+export async function listDependencyEdgesByScene(
+  db: DbLike,
+  sceneId: string,
+): Promise<DependencyEdge[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM dependency_edges WHERE scene_id = ${sceneId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToDependencyEdge);
+}
+
+export async function listDependencyEdgesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<DependencyEdge[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM dependency_edges WHERE work_id = ${workId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToDependencyEdge);
 }

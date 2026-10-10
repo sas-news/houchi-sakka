@@ -10,6 +10,7 @@ export default defineConfig({
       { find: /^@houchi\/database\/testing$/, replacement: r("../../packages/database/src/testing.ts") },
       { find: /^@houchi\/database$/, replacement: r("../../packages/database/src/index.ts") },
       { find: /^@houchi\/secrets$/, replacement: r("../../packages/secrets/src/index.ts") },
+      { find: /^@houchi\/workspace$/, replacement: r("../../packages/workspace/src/index.ts") },
     ],
   },
 });

@@ -6,6 +6,7 @@ import type {
   WorkDetail,
   WorkInfo,
   WorkProse,
+  WorkspaceFileInfo,
 } from "./types";
 
 /** セッション Cookie 前提の小さな fetch ラッパー。 */
@@ -46,6 +47,12 @@ async function call<T>(
 export const api = {
   getWork: (id: string) => call<WorkDetail>(`/api/works/${id}`),
   getProse: (id: string) => call<WorkProse>(`/api/works/${id}/prose`),
+  listWorkspaceFiles: (id: string) =>
+    call<{ files: WorkspaceFileInfo[] }>(`/api/works/${id}/workspace/files`),
+  getWorkspaceFile: (id: string, path: string) =>
+    call<{ path: string; content: string }>(
+      `/api/works/${id}/workspace/file?path=${encodeURIComponent(path)}`,
+    ),
   listKeys: () => call<{ keys: KeyInfo[] }>("/api/keys"),
   decideProposal: (id: string, action: "approve" | "reject") =>
     call<{ proposal: ProposalInfo }>(`/api/proposals/${id}/${action}`, "POST"),

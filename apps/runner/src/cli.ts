@@ -85,6 +85,99 @@ function phase1bStubResponder(req: ProviderRequest): string {
   ].join("\n");
 }
 
+/**
+ * STUB_SCENARIO=phase2a: 対話→RUN_PLAN→plan 提案→シーン提案→
+ * write/critique/revise の多段パイプラインまでを stub で回す E2E 用応答。
+ * - 「計画担当」(planner) → 計画 JSON。
+ * - 「検査担当」(critic) → ドラフト (切符なし) には high 指摘、改稿には空。
+ * - 「執筆担当」(writer) → 本文+canon+依存の JSON。検査結果を含むと改稿版。
+ * - orchestrator: 1往復目=前提確定、2往復目=<<RUN_PLAN>>、3往復目=<<PROPOSE>>。
+ */
+function phase2aStubResponder(req: ProviderRequest): string {
+  const joined = req.input.map((m) => m.content).join("\n");
+
+  if (joined.includes("「計画担当」") || joined.includes("計画担当")) {
+    return JSON.stringify({
+      episodes: [
+        {
+          title: "第1話 廃線の街",
+          scenes: [
+            {
+              title: "廃線ホーム",
+              purpose: "主人公の旅立ちの動機を示す導入",
+            },
+            { title: "線路の先へ", purpose: "都市の外へ向かう決意" },
+          ],
+        },
+      ],
+    });
+  }
+  if (joined.includes("検査担当")) {
+    // 本文に「濡れた切符」がないドラフトには high 指摘を返す (revise 確認用)。
+    if (!joined.includes("切符を眺め")) {
+      return JSON.stringify({
+        violations: [
+          {
+            rule: "required_events",
+            detail:
+              "必須イベント「濡れた切符」が本文に出ていない",
+            severity: "high",
+          },
+        ],
+        notes: ["情景描写は契約に合致している"],
+      });
+    }
+    return JSON.stringify({ violations: [], notes: ["契約に適合"] });
+  }
+  if (joined.includes("執筆担当")) {
+    const revised = joined.includes("この指摘を直して書き直してください");
+    const prose = revised
+      ? [
+          "雨がやんだ頃、廃線のホームに少女が立っていた。",
+          "",
+          "彼女は濡れた切符を眺め、それから意を決したように線路の先を見上げた。もう戻る汽車は来ない。来ないからこそ、歩き出す理由ができた。",
+          "",
+          "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
+        ].join("\n")
+      : [
+          "雨がやんだ頃、廃線のホームに少女が立っていた。",
+          "",
+          "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
+        ].join("\n");
+    return JSON.stringify({
+      prose_md: prose,
+      canon_facts_new: ["都市の心音は石畳の下に響いている"],
+      depends_on: [
+        { target_kind: "canon_fact", target_ref: "汽車はもう走っていない" },
+      ],
+    });
+  }
+
+  // 注意: 「保留中の提案」という語はプロンプト本文にも出るため、
+  // 注入された見出し行で判定する (phase1b と同じ罠)。
+  if (joined.includes("保留中の提案 (作者の決定待ち")) {
+    return "出している提案の決定を待っています。承認か却下、修正の指示をください。";
+  }
+  const userTurns = req.input.filter((m) => m.role === "user").length;
+  if (userTurns >= 3) {
+    return [
+      "計画の第1話から、冒頭シーンをこの契約で書きましょう。問題なければ承認してください。",
+      '<<PROPOSE {"episode_title": "第1話 廃線の街", "scene_title": "廃線ホーム", "scene_purpose": "主人公の旅立ちの動機を示す導入", "contract": {"role": "物語の導入。主人公が旅に出る決意をする", "pov": "三人称・主人公寄り", "required_events": ["雨上がりの廃線ホーム", "濡れた切符", "都市の心音を聞く"], "forbidden": ["説明口調の背景説明"], "knowledge_notes": "世界観はメトロポリス幻想", "connections": "前話なし。次シーンで列車跡をたどる"}}>>',
+    ].join("\n");
+  }
+  if (userTurns === 2) {
+    return [
+      "前提は固まりました。作品の計画を立てましょう — 起票しておきます。",
+      "<<RUN_PLAN>>",
+    ].join("\n");
+  }
+  return [
+    "いいですね。その方向で前提を固めましょう。ジャンルと主人公の動機を整理しました。次に計画を立てるか聞かせてください。",
+    '<<CANON_FACTS ["主人公は廃都市に暮らす少女", "汽車はもう走っていない"]>>',
+    '<<WORK_PATCH {"premise": "廃都市を出て行く少女の旅", "genre": "ファンタジー", "status": "active"}>>',
+  ].join("\n");
+}
+
 function intEnv(name: string, fallback: number): number {
   const v = process.env[name];
   if (!v) return fallback;
@@ -126,6 +219,9 @@ async function main(): Promise<void> {
   // ここに選択した provider を載せれば既定経路が変わる。
   if (process.env.STUB_SCENARIO === "phase1b") {
     providers["stub"] = new StubProvider({ respond: phase1bStubResponder });
+  }
+  if (process.env.STUB_SCENARIO === "phase2a") {
+    providers["stub"] = new StubProvider({ respond: phase2aStubResponder });
   }
 
   if (defaultProvider) {

@@ -18,6 +18,8 @@ import type {
   ProgressRequest,
   ProgressResponse,
   ProposalResponse,
+  RecordDependenciesRequest,
+  DependencyEdgesResponse,
   ResolveKeyRequest,
   ResolveKeyResponse,
   SceneContextResponse,
@@ -130,6 +132,16 @@ export class ApiClient {
     return this.call(
       "POST",
       `/api/internal/scenes/${sceneId}/revisions`,
+      req,
+    );
+  }
+  recordSceneDependencies(
+    sceneId: string,
+    req: RecordDependenciesRequest,
+  ): Promise<DependencyEdgesResponse> {
+    return this.call(
+      "POST",
+      `/api/internal/scenes/${sceneId}/dependencies`,
       req,
     );
   }

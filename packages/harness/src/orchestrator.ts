@@ -1,5 +1,6 @@
 import {
   JOB_KIND_ORCHESTRATOR_TURN,
+  JOB_KIND_PLAN_WORK,
   OrchestratorTurnPayloadSchema,
   PROPOSAL_KIND_WRITING_CONTRACT,
   type OrchestratorTurnResult,
@@ -48,6 +49,7 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
       pendingProposals: threadCtx.proposals
         .filter((p) => p.status === "pending")
         .map((p) => JSON.stringify(p.payload)),
+      workspaceFiles: threadCtx.workspace_files,
     });
 
     // token 進捗は発行順を保つよう逐次化する (smoke_generate と同じ)。
@@ -75,9 +77,8 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     await ctx.postProgress("status", { step: "resume_from_checkpoint" });
   }
 
-  const { cleanText, patch, proposal, canonFacts } = parseOrchestratorMarkers(
-    providerResult.output_text,
-  );
+  const { cleanText, patch, proposal, canonFacts, runPlan } =
+    parseOrchestratorMarkers(providerResult.output_text);
   let assistantMessageId = checkpoint.assistant_message_id;
 
   if (!assistantMessageId) {
@@ -126,6 +127,30 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
           scene_title: proposal.sceneTitle,
           scene_purpose: proposal.scenePurpose,
           contract: proposal.contract,
+        },
+      });
+    }
+    // <<RUN_PLAN>>: plan_work ジョブを起票 (キー/プロバイダーはこの往復と同じ)
+    if (runPlan) {
+      if (!ctx.enqueueJob) {
+        throw new Error("orchestrator job enqueue is not wired");
+      }
+      await ctx.postProgress("status", { step: "enqueue_plan_work" });
+      await ctx.enqueueJob({
+        kind: JOB_KIND_PLAN_WORK,
+        work_ref: payload.work_id,
+        user_ref: payload.user_ref,
+        idempotency_key: `plan_work:${job.id}`,
+        payload: {
+          work_id: payload.work_id,
+          thread_id: payload.thread_id,
+          user_ref: payload.user_ref,
+          key_ref: payload.key_ref,
+          provider: payload.provider,
+          model: payload.model,
+          ...(runPlan.guidance !== undefined
+            ? { guidance: runPlan.guidance }
+            : {}),
         },
       });
     }

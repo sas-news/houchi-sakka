@@ -121,6 +121,11 @@ function makeCtx(opts: {
           created_at: 0,
         },
       ],
+      workspace_files: [
+        { path: "/work.json", summary: "作品の基本情報" },
+        { path: "/canon/facts.md", summary: "正典メモ 0件" },
+      ],
+      plan_tree: "(計画はまだありません)",
     }),
     persistChatMessage: async (req) => {
       const m: ChatMessage = {
@@ -228,6 +233,43 @@ describe("orchestrator_turn harness", () => {
     expect(status).toBe("completed");
     expect(provider.calls).toBe(1);
     expect(persisted).toHaveLength(1);
+  });
+
+  it("<<RUN_PLAN>> で plan_work ジョブを起票する", async () => {
+    const provider = new StubProvider({
+      text: "計画を立てます\n<<RUN_PLAN {\"guidance\": \"序盤だけ\"}>>",
+    });
+    const store = { payload: { ...PAYLOAD } };
+    const persisted: ChatMessage[] = [];
+    const patches: { workId: string; patch: Record<string, unknown> }[] = [];
+    const enqueued: { kind: string; payload: Record<string, unknown> }[] = [];
+    const { ctx } = makeCtx({ provider, store, persisted, patches });
+    ctx.enqueueJob = async (req) => {
+      enqueued.push({ kind: req.kind, payload: req.payload });
+      return {
+        id: "job-plan",
+        kind: req.kind,
+        work_ref: req.work_ref,
+        user_ref: req.user_ref,
+        payload: req.payload,
+        idempotency_key: req.idempotency_key,
+        status: "queued" as const,
+        leased_by: null,
+        lease_token: null,
+        lease_expires_at: null,
+        attempts: 0,
+        result: null,
+        error: null,
+        created_at: 0,
+        updated_at: 0,
+      };
+    };
+    await runJob(makeJob(store.payload), ctx);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.kind).toBe("plan_work");
+    expect(enqueued[0]!.payload.guidance).toBe("序盤だけ");
+    expect(enqueued[0]!.payload.thread_id).toBe("t1");
+    expect(enqueued[0]!.payload.key_ref).toBe("key-1");
   });
 
   it("context 未取得 (web 未対応) は fail する", async () => {

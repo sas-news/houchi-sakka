@@ -1,5 +1,5 @@
 {
-  "name": "@houchi/harness",
+  "name": "@houchi/skills",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,9 +17,6 @@
   },
   "dependencies": {
     "@houchi/contracts": "workspace:*",
-    "@houchi/prompts": "workspace:*",
-    "@houchi/providers": "workspace:*",
-    "@houchi/skills": "workspace:*",
     "zod": "^3.25.76"
   },
   "devDependencies": {
