@@ -224,3 +224,123 @@ button:disabled {
     align-items: start;
   }
 }
+
+/* タブ (対話/本文/設定) */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: 8px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: bold;
+}
+
+/* 提案カード */
+.proposal-card {
+  align-self: flex-start;
+  max-width: 92%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 0.9rem;
+}
+
+.proposal-card.rejected {
+  border-color: var(--border);
+  opacity: 0.75;
+}
+
+.proposal-card.approved {
+  border-color: #4a7a3b;
+}
+
+.proposal-card .proposal-body p {
+  margin: 4px 0;
+}
+
+.proposal-card dl.contract {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+}
+
+.proposal-card dl.contract dt {
+  color: var(--muted);
+}
+
+.proposal-card dl.contract dd {
+  margin: 0;
+}
+
+.proposal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* 本文タブ */
+.scene-list .card {
+  padding: 10px 12px;
+}
+
+.scene-item {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.scene-item.active {
+  border-color: var(--accent);
+  background: #fdf3ee;
+}
+
+.prose-body {
+  margin: 14px 0;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.prose-body p {
+  margin: 0 0 1em;
+  text-indent: 1em;
+}
+
+.prose-body p:last-child {
+  margin-bottom: 0;
+}
+
+.json-view {
+  background: #f5f2ec;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

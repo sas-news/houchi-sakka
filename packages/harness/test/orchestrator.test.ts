@@ -21,6 +21,11 @@ const WORK = {
   premise: "前提",
   genre: "",
   status: "setup" as const,
+  charter: null,
+  policy: null,
+  provider: null,
+  model: null,
+  key_ref: null,
   created_at: 0,
   updated_at: 0,
 };
@@ -66,6 +71,8 @@ function makeCtx(opts: {
   store: { payload: Record<string, unknown> };
   persisted: ChatMessage[];
   patches: { workId: string; patch: Record<string, unknown> }[];
+  proposals?: { payload: Record<string, unknown> }[];
+  canonFacts?: { statements: string[]; provenance: string }[];
   completeFailures?: number;
 }) {
   const calls: Call[] = [];
@@ -102,6 +109,8 @@ function makeCtx(opts: {
     ): Promise<OrchestratorContextData> => ({
       thread: THREAD,
       work: WORK,
+      canon_facts: [],
+      proposals: [],
       messages: [
         {
           id: "m-user",
@@ -127,6 +136,25 @@ function makeCtx(opts: {
     },
     applyWorkPatch: async (workId, patch) => {
       opts.patches.push({ workId, patch });
+    },
+    createProposal: async (req) => {
+      const proposal = {
+        id: `prop-${++msgSeq}`,
+        work_id: req.work_id,
+        thread_id: req.thread_id,
+        message_id: req.message_id,
+        kind: req.kind,
+        payload: req.payload,
+        status: "pending" as const,
+        decided_at: null,
+        created_at: msgSeq,
+      };
+      (opts.proposals ??= []).push(proposal);
+      return proposal;
+    },
+    addCanonFacts: async (req) => {
+      (opts.canonFacts ??= []).push(req);
+      return { added: req.statements.length };
     },
   };
   return { ctx, calls };

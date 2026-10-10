@@ -1,22 +1,28 @@
 import {
   JOB_KIND_ORCHESTRATOR_TURN,
   OrchestratorTurnPayloadSchema,
+  PROPOSAL_KIND_WRITING_CONTRACT,
   type OrchestratorTurnResult,
 } from "@houchi/contracts";
-import { buildOrchestratorInput, parseWorkPatch } from "@houchi/prompts";
+import {
+  buildOrchestratorInput,
+  parseOrchestratorMarkers,
+} from "@houchi/prompts";
 import type { TokenCallback } from "@houchi/providers";
 import type { JobHandler } from "./index.js";
 
 /**
  * orchestrator_turn: 対話1往復 = 1ジョブ (spec §7.5)。
  *
- * (a) スレッド履歴+作品情報を取得 → (b) BYOキーで provider を呼ぶ
- * → (c) provider_result を checkpoint 永続化
- * → (d) assistant メッセージを永続化し WORK_PATCH を適用
+ * (a) スレッド履歴+作品情報+正典メモ+保留提案を取得 → (b) BYOキーで provider
+ * を呼ぶ → (c) provider_result を checkpoint 永続化
+ * → (d) assistant メッセージを永続化し、末尾マーカー
+ *   (WORK_PATCH / PROPOSE / CANON_FACTS) を順に適用
  * → (e) assistant_message_id を checkpoint 永続化 → complete。
  *
  * smoke_generate と同じ2段階の思想: (c) まで進めば再リース時に
- * プロバイダー呼び出しをスキップする。(d) は冪等 (job_id ユニーク +
+ * プロバイダー呼び出しをスキップする。(d) は冪等 (message の job_id ユニーク、
+ * proposal の message_id+kind ユニーク、canon_facts の statement ユニーク、
  * patch の再適用は無害) なので再実行してよい。
  */
 export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
@@ -38,6 +44,10 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     const input = buildOrchestratorInput({
       work: threadCtx.work,
       messages: threadCtx.messages,
+      canonFacts: threadCtx.canon_facts.map((f) => f.statement),
+      pendingProposals: threadCtx.proposals
+        .filter((p) => p.status === "pending")
+        .map((p) => JSON.stringify(p.payload)),
     });
 
     // token 進捗は発行順を保つよう逐次化する (smoke_generate と同じ)。
@@ -65,24 +75,59 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     await ctx.postProgress("status", { step: "resume_from_checkpoint" });
   }
 
-  const { replyText, patch } = parseWorkPatch(providerResult.output_text);
+  const { cleanText, patch, proposal, canonFacts } = parseOrchestratorMarkers(
+    providerResult.output_text,
+  );
   let assistantMessageId = checkpoint.assistant_message_id;
 
   if (!assistantMessageId) {
-    if (!ctx.persistChatMessage || !ctx.applyWorkPatch) {
+    if (
+      !ctx.persistChatMessage ||
+      !ctx.applyWorkPatch ||
+      !ctx.createProposal ||
+      !ctx.addCanonFacts
+    ) {
       throw new Error("orchestrator persistence is not wired");
     }
     await ctx.postProgress("status", { step: "persist_message" });
     const message = await ctx.persistChatMessage({
       thread_id: payload.thread_id,
       role: "assistant",
-      content: replyText,
+      content: cleanText,
       job_id: job.id,
     });
     assistantMessageId = message.id;
     if (patch) {
       await ctx.postProgress("status", { step: "apply_work_patch" });
       await ctx.applyWorkPatch(payload.work_id, patch);
+    }
+    if (canonFacts.length > 0) {
+      await ctx.postProgress("status", {
+        step: "add_canon_facts",
+        count: canonFacts.length,
+      });
+      await ctx.addCanonFacts({
+        work_id: payload.work_id,
+        statements: canonFacts,
+        provenance: "orchestrator",
+      });
+    }
+    if (proposal) {
+      await ctx.postProgress("status", { step: "create_proposal" });
+      await ctx.createProposal({
+        work_id: payload.work_id,
+        thread_id: payload.thread_id,
+        message_id: assistantMessageId,
+        kind: PROPOSAL_KIND_WRITING_CONTRACT,
+        payload: {
+          ...(proposal.episodeTitle
+            ? { episode_title: proposal.episodeTitle }
+            : {}),
+          scene_title: proposal.sceneTitle,
+          scene_purpose: proposal.scenePurpose,
+          contract: proposal.contract,
+        },
+      });
     }
     await ctx.saveCheckpoint({
       assistant_message_id: assistantMessageId,
@@ -93,7 +138,7 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
   const result: OrchestratorTurnResult = {
     kind: JOB_KIND_ORCHESTRATOR_TURN,
     message_id: assistantMessageId,
-    reply_preview: replyText.slice(0, 140),
+    reply_preview: cleanText.slice(0, 140),
   };
   await ctx.complete(result);
 };

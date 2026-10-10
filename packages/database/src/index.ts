@@ -1,24 +1,37 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import {
   AgentJobSchema,
+  CanonFactSchema,
   ChatMessageSchema,
   ChatRoleSchema,
   ChatThreadSchema,
+  EpisodeSchema,
   JobStatusSchema,
   ProgressEventSchema,
+  ProposalSchema,
   ProviderKeySchema,
+  SceneRevisionSchema,
+  SceneSchema,
   WorkSchema,
   WorkStatusSchema,
+  WritingContractPayloadSchema,
+  WritingContractSchema,
   type AgentJob,
+  type CanonFact,
   type ChatMessage,
   type ChatRole,
   type ChatThread,
+  type Episode,
   type JobStatus,
   type ProgressEvent,
   type ProgressEventType,
+  type Proposal,
   type ProviderKey,
+  type Scene,
+  type SceneRevision,
   type Work,
   type WorkStatus,
+  type WritingContract,
 } from "@houchi/contracts";
 
 export * from "./schema.js";
@@ -104,6 +117,11 @@ function rowToWork(r: Row): Work {
     premise: r.premise,
     genre: r.genre,
     status: WorkStatusSchema.parse(r.status),
+    charter: r.charter_json == null ? null : JSON.parse(String(r.charter_json)),
+    policy: r.policy_json == null ? null : JSON.parse(String(r.policy_json)),
+    provider: r.provider ?? null,
+    model: r.model ?? null,
+    key_ref: r.key_ref ?? null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   });
@@ -435,15 +453,26 @@ export async function deleteKey(
 /** 作品と1本の対話スレッドを同時に作る (MVP は作品につきスレッド1本)。 */
 export async function createWork(
   db: DbLike,
-  input: { ownerRef: string; title: string; premise?: string },
+  input: {
+    ownerRef: string;
+    title: string;
+    premise?: string;
+    provider?: string;
+    model?: string;
+    keyRef?: string;
+  },
 ): Promise<{ work: Work; thread: ChatThread }> {
   const workId = crypto.randomUUID();
   const threadId = crypto.randomUUID();
   const t = now();
   const workRows = (await db.all(sql`
-    INSERT INTO works (id, owner_ref, title, premise, genre, status, created_at, updated_at)
+    INSERT INTO works (id, owner_ref, title, premise, genre, status,
+                       charter_json, policy_json, provider, model, key_ref,
+                       created_at, updated_at)
     VALUES (${workId}, ${input.ownerRef}, ${input.title},
-            ${input.premise ?? ""}, '', 'setup', ${t}, ${t})
+            ${input.premise ?? ""}, '', 'setup', NULL, NULL,
+            ${input.provider ?? null}, ${input.model ?? null},
+            ${input.keyRef ?? null}, ${t}, ${t})
     RETURNING *
   `)) as Row[];
   const threadRows = (await db.all(sql`
@@ -486,6 +515,8 @@ export async function patchWork(
     premise?: string;
     genre?: string;
     status?: WorkStatus;
+    charter?: unknown;
+    policy?: unknown;
   },
 ): Promise<Work | null> {
   const cur = await getWorkById(db, input.id);
@@ -496,6 +527,32 @@ export async function patchWork(
       premise = ${input.premise ?? cur.premise},
       genre = ${input.genre ?? cur.genre},
       status = ${input.status ?? cur.status},
+      charter_json = ${input.charter === undefined ? (cur.charter === null ? null : JSON.stringify(cur.charter)) : JSON.stringify(input.charter)},
+      policy_json = ${input.policy === undefined ? (cur.policy === null ? null : JSON.stringify(cur.policy)) : JSON.stringify(input.policy)},
+      updated_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rowToWork(rows[0]!);
+}
+
+/** provider/model/key_ref の設定 (設定タブ用)。 */
+export async function updateWorkConfig(
+  db: DbLike,
+  input: {
+    id: string;
+    keyRef?: string | null;
+    provider?: string | null;
+    model?: string;
+  },
+): Promise<Work | null> {
+  const cur = await getWorkById(db, input.id);
+  if (!cur) return null;
+  const rows = (await db.all(sql`
+    UPDATE works SET
+      key_ref = ${input.keyRef === undefined ? cur.key_ref : input.keyRef},
+      provider = ${input.provider === undefined ? cur.provider : input.provider},
+      model = ${input.model ?? cur.model},
       updated_at = ${now()}
     WHERE id = ${input.id}
     RETURNING *
@@ -588,13 +645,434 @@ export async function getMessageByJobId(
 
 export type {
   AgentJob,
+  CanonFact,
   ChatMessage,
   ChatRole,
   ChatThread,
+  Episode,
   JobStatus,
   ProgressEvent,
   ProgressEventType,
+  Proposal,
   ProviderKey,
+  Scene,
+  SceneRevision,
   Work,
   WorkStatus,
+  WritingContract,
 };
+
+// ---------------------------------------------------------------------------
+// Phase 1b: episodes / scenes / scene_revisions / writing_contracts /
+//           canon_facts / proposals
+// ---------------------------------------------------------------------------
+
+function rowToEpisode(r: Row): Episode {
+  return EpisodeSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    ord: r.ord,
+    title: r.title,
+    status: r.status,
+    created_at: r.created_at,
+  });
+}
+
+function rowToScene(r: Row): Scene {
+  return SceneSchema.parse({
+    id: r.id,
+    episode_id: r.episode_id,
+    ord: r.ord,
+    title: r.title,
+    purpose: r.purpose,
+    status: r.status,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  });
+}
+
+function rowToRevision(r: Row): SceneRevision {
+  return SceneRevisionSchema.parse({
+    id: r.id,
+    scene_id: r.scene_id,
+    rev_no: r.rev_no,
+    content_json: JSON.parse(String(r.content_json)),
+    source: r.source,
+    job_id: r.job_id ?? null,
+    created_at: r.created_at,
+  });
+}
+
+function rowToContract(r: Row): WritingContract {
+  return WritingContractSchema.parse({
+    id: r.id,
+    scene_id: r.scene_id,
+    status: r.status,
+    payload: WritingContractPayloadSchema.parse(JSON.parse(String(r.payload))),
+    created_at: r.created_at,
+    decided_at: r.decided_at ?? null,
+  });
+}
+
+function rowToCanonFact(r: Row): CanonFact {
+  return CanonFactSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    statement: r.statement,
+    provenance: r.provenance,
+    created_at: r.created_at,
+  });
+}
+
+function rowToProposal(r: Row): Proposal {
+  return ProposalSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    thread_id: r.thread_id,
+    message_id: r.message_id,
+    kind: r.kind,
+    payload: JSON.parse(String(r.payload)),
+    status: r.status,
+    decided_at: r.decided_at ?? null,
+    created_at: r.created_at,
+  });
+}
+
+export async function createEpisode(
+  db: DbLike,
+  input: { workId: string; title: string },
+): Promise<Episode> {
+  const rows = (await db.all(sql`
+    INSERT INTO episodes (id, work_id, ord, title, status, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.workId},
+            (SELECT COALESCE(MAX(ord), 0) + 1 FROM episodes WHERE work_id = ${input.workId}),
+            ${input.title}, 'active', ${now()})
+    RETURNING *
+  `)) as Row[];
+  return rowToEpisode(rows[0]!);
+}
+
+export async function getLatestEpisode(
+  db: DbLike,
+  workId: string,
+): Promise<Episode | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM episodes WHERE work_id = ${workId}
+        ORDER BY ord DESC LIMIT 1`,
+  )) as Row | undefined;
+  return r ? rowToEpisode(r) : null;
+}
+
+export async function listEpisodesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<Episode[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM episodes WHERE work_id = ${workId} ORDER BY ord ASC`,
+  )) as Row[];
+  return rows.map(rowToEpisode);
+}
+
+export async function findEpisodeByTitle(
+  db: DbLike,
+  workId: string,
+  title: string,
+): Promise<Episode | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM episodes WHERE work_id = ${workId} AND title = ${title}
+        ORDER BY ord ASC LIMIT 1`,
+  )) as Row | undefined;
+  return r ? rowToEpisode(r) : null;
+}
+
+export async function createScene(
+  db: DbLike,
+  input: { episodeId: string; title: string; purpose: string; status: string },
+): Promise<Scene> {
+  const t = now();
+  const rows = (await db.all(sql`
+    INSERT INTO scenes (id, episode_id, ord, title, purpose, status, created_at, updated_at)
+    VALUES (${crypto.randomUUID()}, ${input.episodeId},
+            (SELECT COALESCE(MAX(ord), 0) + 1 FROM scenes WHERE episode_id = ${input.episodeId}),
+            ${input.title}, ${input.purpose}, ${input.status}, ${t}, ${t})
+    RETURNING *
+  `)) as Row[];
+  return rowToScene(rows[0]!);
+}
+
+export async function getSceneById(
+  db: DbLike,
+  id: string,
+): Promise<Scene | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM scenes WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToScene(r) : null;
+}
+
+/** シーンが属する作品の owner を取る (権限チェック用)。 */
+export async function getWorkIdBySceneId(
+  db: DbLike,
+  sceneId: string,
+): Promise<string | null> {
+  const r = (await db.get(
+    sql`SELECT e.work_id FROM scenes s
+        JOIN episodes e ON e.id = s.episode_id
+        WHERE s.id = ${sceneId}`,
+  )) as Row | undefined;
+  return r ? String(r.work_id) : null;
+}
+
+export async function listScenesByEpisode(
+  db: DbLike,
+  episodeId: string,
+): Promise<Scene[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM scenes WHERE episode_id = ${episodeId}
+        ORDER BY ord ASC`,
+  )) as Row[];
+  return rows.map(rowToScene);
+}
+
+export async function listScenesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<Scene[]> {
+  const rows = (await db.all(
+    sql`SELECT s.* FROM scenes s
+        JOIN episodes e ON e.id = s.episode_id
+        WHERE e.work_id = ${workId}
+        ORDER BY e.ord ASC, s.ord ASC`,
+  )) as Row[];
+  return rows.map(rowToScene);
+}
+
+export async function updateSceneStatus(
+  db: DbLike,
+  input: { id: string; status: string },
+): Promise<Scene | null> {
+  const rows = (await db.all(sql`
+    UPDATE scenes SET status = ${input.status}, updated_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToScene(rows[0]!) : null;
+}
+
+/** rev_no = 最大+1 でリビジョンを作る (ユニーク制約で重複 rev_no を防ぐ)。 */
+export async function createSceneRevision(
+  db: DbLike,
+  input: {
+    sceneId: string;
+    contentJson: unknown;
+    source: string;
+    jobId?: string | null;
+  },
+): Promise<SceneRevision> {
+  const rows = (await db.all(sql`
+    INSERT INTO scene_revisions (id, scene_id, rev_no, content_json, source, job_id, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.sceneId},
+            (SELECT COALESCE(MAX(rev_no), 0) + 1 FROM scene_revisions WHERE scene_id = ${input.sceneId}),
+            ${JSON.stringify(input.contentJson)}, ${input.source},
+            ${input.jobId ?? null}, ${now()})
+    RETURNING *
+  `)) as Row[];
+  return rowToRevision(rows[0]!);
+}
+
+export async function listRevisionsByScene(
+  db: DbLike,
+  sceneId: string,
+): Promise<SceneRevision[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM scene_revisions WHERE scene_id = ${sceneId}
+        ORDER BY rev_no ASC`,
+  )) as Row[];
+  return rows.map(rowToRevision);
+}
+
+export async function listRevisionsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<SceneRevision[]> {
+  const rows = (await db.all(
+    sql`SELECT r.* FROM scene_revisions r
+        JOIN scenes s ON s.id = r.scene_id
+        JOIN episodes e ON e.id = s.episode_id
+        WHERE e.work_id = ${workId}
+        ORDER BY e.ord ASC, s.ord ASC, r.rev_no ASC`,
+  )) as Row[];
+  return rows.map(rowToRevision);
+}
+
+export async function createWritingContract(
+  db: DbLike,
+  input: { sceneId: string; status: string; payload: unknown; decidedAt?: number | null },
+): Promise<WritingContract> {
+  const rows = (await db.all(sql`
+    INSERT INTO writing_contracts (id, scene_id, status, payload, created_at, decided_at)
+    VALUES (${crypto.randomUUID()}, ${input.sceneId}, ${input.status},
+            ${JSON.stringify(input.payload)}, ${now()}, ${input.decidedAt ?? null})
+    RETURNING *
+  `)) as Row[];
+  return rowToContract(rows[0]!);
+}
+
+export async function getContractById(
+  db: DbLike,
+  id: string,
+): Promise<WritingContract | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM writing_contracts WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToContract(r) : null;
+}
+
+export async function getLatestContractByScene(
+  db: DbLike,
+  sceneId: string,
+): Promise<WritingContract | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM writing_contracts WHERE scene_id = ${sceneId}
+        ORDER BY created_at DESC LIMIT 1`,
+  )) as Row | undefined;
+  return r ? rowToContract(r) : null;
+}
+
+export async function listContractsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<WritingContract[]> {
+  const rows = (await db.all(
+    sql`SELECT c.* FROM writing_contracts c
+        JOIN scenes s ON s.id = c.scene_id
+        JOIN episodes e ON e.id = s.episode_id
+        WHERE e.work_id = ${workId}
+        ORDER BY c.created_at ASC`,
+  )) as Row[];
+  return rows.map(rowToContract);
+}
+
+export async function updateContractStatus(
+  db: DbLike,
+  input: { id: string; status: string },
+): Promise<WritingContract | null> {
+  const rows = (await db.all(sql`
+    UPDATE writing_contracts SET status = ${input.status}, decided_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToContract(rows[0]!) : null;
+}
+
+/** 正典メモを追加。statement 完全一致は重複スキップして追加件数を返す。 */
+export async function addCanonFacts(
+  db: DbLike,
+  input: { workId: string; statements: string[]; provenance: string },
+): Promise<{ canonFacts: CanonFact[]; added: number }> {
+  let added = 0;
+  for (const statement of input.statements) {
+    const rows = (await db.all(sql`
+      INSERT INTO canon_facts (id, work_id, statement, provenance, created_at)
+      VALUES (${crypto.randomUUID()}, ${input.workId}, ${statement},
+              ${input.provenance}, ${now()})
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `)) as Row[];
+    added += rows.length;
+  }
+  return { canonFacts: await listCanonFactsByWork(db, input.workId), added };
+}
+
+export async function listCanonFactsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<CanonFact[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM canon_facts WHERE work_id = ${workId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToCanonFact);
+}
+
+/** 提案の作成 (message_id+kind のユニーク制約で冪等)。 */
+export async function createProposal(
+  db: DbLike,
+  input: {
+    workId: string;
+    threadId: string;
+    messageId: string;
+    kind: string;
+    payload: unknown;
+  },
+): Promise<Proposal> {
+  const rows = (await db.all(sql`
+    INSERT INTO proposals (id, work_id, thread_id, message_id, kind, payload, status, decided_at, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.threadId},
+            ${input.messageId}, ${input.kind}, ${JSON.stringify(input.payload)},
+            'pending', NULL, ${now()})
+    ON CONFLICT(message_id, kind) DO NOTHING
+    RETURNING *
+  `)) as Row[];
+  if (rows.length > 0) return rowToProposal(rows[0]!);
+  const existing = (await db.get(
+    sql`SELECT * FROM proposals WHERE message_id = ${input.messageId}
+        AND kind = ${input.kind}`,
+  )) as Row | undefined;
+  if (!existing) throw new RepoError("internal", "insert failed");
+  return rowToProposal(existing);
+}
+
+export async function getProposalById(
+  db: DbLike,
+  id: string,
+): Promise<Proposal | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM proposals WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToProposal(r) : null;
+}
+
+export async function updateProposalStatus(
+  db: DbLike,
+  input: { id: string; status: string },
+): Promise<Proposal | null> {
+  const rows = (await db.all(sql`
+    UPDATE proposals SET status = ${input.status}, decided_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToProposal(rows[0]!) : null;
+}
+
+export async function listProposalsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<Proposal[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM proposals WHERE work_id = ${workId}
+        ORDER BY created_at DESC`,
+  )) as Row[];
+  return rows.map(rowToProposal);
+}
+
+export async function listPendingProposalsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<Proposal[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM proposals WHERE work_id = ${workId}
+        AND status = 'pending' ORDER BY created_at ASC`,
+  )) as Row[];
+  return rows.map(rowToProposal);
+}
+
+export async function getEpisodeById(
+  db: DbLike,
+  id: string,
+): Promise<Episode | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM episodes WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToEpisode(r) : null;
+}

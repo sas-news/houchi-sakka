@@ -16,7 +16,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@houchi/contracts": "workspace:*"
+    "@houchi/contracts": "workspace:*",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

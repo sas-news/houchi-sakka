@@ -11,6 +11,7 @@ import { z } from "zod";
 
 export const JOB_KIND_SMOKE_GENERATE = "smoke_generate" as const;
 export const JOB_KIND_ORCHESTRATOR_TURN = "orchestrator_turn" as const;
+export const JOB_KIND_GENERATE_SCENE = "generate_scene" as const;
 
 /** ジョブ種別。拡張前提の文字列型。 */
 export const JobKindSchema = z.string().min(1);
@@ -338,6 +339,14 @@ export const WorkSchema = z.object({
   premise: z.string(),
   genre: z.string(),
   status: WorkStatusSchema,
+  /** StoryCharter (作品の狙い・制約) JSON。未作成は null (spec §6.1)。 */
+  charter: z.unknown().nullable(),
+  /** NarrativePolicy (執筆方式・計画先行範囲) JSON。未作成は null。 */
+  policy: z.unknown().nullable(),
+  /** この作品で使うプロバイダー/モデル/キー (未設定は null → 既定解決)。 */
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  key_ref: z.string().nullable(),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -403,7 +412,187 @@ export const OrchestratorTurnResultSchema = z.object({
 export type OrchestratorTurnResult = z.infer<typeof OrchestratorTurnResultSchema>;
 
 // ---------------------------------------------------------------------------
+// generate_scene ジョブ (Phase 1b, spec §4.4/§7.5)
+// ---------------------------------------------------------------------------
+
+export const GenerateSceneCheckpointSchema = z
+  .object({
+    /** persist 済みのプロバイダー応答 (生成本文)。 */
+    provider_result: ProviderResponseSchema.optional(),
+    /** 永続化済みの scene_revisions.id。 */
+    revision_id: z.string().optional(),
+  })
+  .passthrough();
+export type GenerateSceneCheckpoint = z.infer<
+  typeof GenerateSceneCheckpointSchema
+>;
+
+export const GenerateScenePayloadSchema = z.object({
+  scene_id: z.string().min(1),
+  /** ゲート検証に使う writing_contracts.id (approved 必須)。 */
+  contract_id: z.string().min(1),
+  work_id: z.string().min(1),
+  /** ジョブを起こしたユーザー (キー解決の owner 照合に使う)。 */
+  user_ref: z.string().min(1),
+  key_ref: z.string().min(1),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  /** 書き直し指示など (初回生成は省略)。 */
+  instruction: z.string().optional(),
+  checkpoint: GenerateSceneCheckpointSchema.optional(),
+});
+export type GenerateScenePayload = z.infer<typeof GenerateScenePayloadSchema>;
+
+export const GenerateSceneResultSchema = z.object({
+  kind: z.literal(JOB_KIND_GENERATE_SCENE),
+  scene_id: z.string(),
+  revision_id: z.string(),
+  rev_no: z.number().int(),
+  resumed_from_checkpoint: z.boolean(),
+});
+export type GenerateSceneResult = z.infer<typeof GenerateSceneResultSchema>;
+
+// ---------------------------------------------------------------------------
 // API: ユーザー向け (セッション認証)
+// ---------------------------------------------------------------------------
+// Phase 1b: 話・シーン・Writing Contract・正典メモ・提案 (spec §3, §4.4, §6)
+// ---------------------------------------------------------------------------
+
+/** 話 (エピソード)。シーンを順序付きで束ねる単位 (spec §6.4)。 */
+export const EpisodeSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  ord: z.number().int(),
+  title: z.string(),
+  status: z.string(),
+  created_at: z.number(),
+});
+export type Episode = z.infer<typeof EpisodeSchema>;
+
+/** シーンの状態。approved → generate_scene が走れる (spec §4.4 ゲート)。 */
+export const SceneStatusSchema = z.enum([
+  "draft",
+  "proposed",
+  "approved",
+  "generated",
+]);
+export type SceneStatus = z.infer<typeof SceneStatusSchema>;
+
+export const SceneSchema = z.object({
+  id: z.string(),
+  episode_id: z.string(),
+  ord: z.number().int(),
+  title: z.string(),
+  purpose: z.string(),
+  status: SceneStatusSchema,
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+export type Scene = z.infer<typeof SceneSchema>;
+
+/** リビジョンの出所。manual_edit = 本文ビューでの手編集 (spec §5.5)。 */
+export const RevisionSourceSchema = z.enum(["ai", "manual_edit"]);
+export type RevisionSource = z.infer<typeof RevisionSourceSchema>;
+
+export const SceneRevisionSchema = z.object({
+  id: z.string(),
+  scene_id: z.string(),
+  rev_no: z.number().int(),
+  /** Tiptap doc JSON (本文の正本, spec §8.1)。 */
+  content_json: z.unknown(),
+  source: RevisionSourceSchema,
+  /** AI生成リビジョンを作ったジョブ (手編集は null)。 */
+  job_id: z.string().nullable(),
+  created_at: z.number(),
+});
+export type SceneRevision = z.infer<typeof SceneRevisionSchema>;
+
+/**
+ * Writing Contract の中身 (spec §3/§4.4 を Phase 1b 用に簡潔化)。
+ * 本文生成前に承認が必須のゲート条件。
+ */
+export const WritingContractPayloadSchema = z.object({
+  /** この話・シーンが物語に果たす役割。 */
+  role: z.string().default(""),
+  /** 視点人物・視点の方針。 */
+  pov: z.string().default(""),
+  /** 起こすべき出来事。 */
+  required_events: z.array(z.string()).default([]),
+  /** 避けるべき出来事・開示制約。 */
+  forbidden: z.array(z.string()).default([]),
+  /** 視点人物が知っている/知らないこと。 */
+  knowledge_notes: z.string().default(""),
+  /** 前後のシーン・アークへの因果的接続。 */
+  connections: z.string().default(""),
+});
+export type WritingContractPayload = z.infer<
+  typeof WritingContractPayloadSchema
+>;
+
+export const WritingContractStatusSchema = z.enum([
+  "draft",
+  "approved",
+  "rejected",
+]);
+export type WritingContractStatus = z.infer<
+  typeof WritingContractStatusSchema
+>;
+
+export const WritingContractSchema = z.object({
+  id: z.string(),
+  scene_id: z.string(),
+  status: WritingContractStatusSchema,
+  payload: WritingContractPayloadSchema,
+  created_at: z.number(),
+  /** 承認/却下が決まった時刻。未決定は null。 */
+  decided_at: z.number().nullable(),
+});
+export type WritingContract = z.infer<typeof WritingContractSchema>;
+
+/** 正典メモ (Phase 1b の最小版: 自然言語文 + 出所のみ, spec §6.4)。 */
+export const CanonFactSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  statement: z.string(),
+  /** 出所 (例: "orchestrator", "author")。 */
+  provenance: z.string(),
+  created_at: z.number(),
+});
+export type CanonFact = z.infer<typeof CanonFactSchema>;
+
+/** チャット内承認カードの種別。 */
+export const PROPOSAL_KIND_WRITING_CONTRACT = "writing_contract" as const;
+export const ProposalStatusSchema = z.enum([
+  "pending",
+  "approved",
+  "rejected",
+]);
+export type ProposalStatus = z.infer<typeof ProposalStatusSchema>;
+
+export const ProposalSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  thread_id: z.string(),
+  /** 提案を表示する assistant メッセージ。 */
+  message_id: z.string(),
+  kind: z.string(),
+  payload: z.unknown(),
+  status: ProposalStatusSchema,
+  decided_at: z.number().nullable(),
+  created_at: z.number(),
+});
+export type Proposal = z.infer<typeof ProposalSchema>;
+
+/** <<PROPOSE …>> マーカーが運ぶ提案内容 (episode+scene+contract セット)。 */
+export const ProposeScenePayloadSchema = z.object({
+  /** 話のタイトル。省略時は最新 episode、無ければ「第1話」を自動作成。 */
+  episode_title: z.string().optional(),
+  scene_title: z.string().min(1),
+  scene_purpose: z.string().default(""),
+  contract: WritingContractPayloadSchema,
+});
+export type ProposeScenePayload = z.infer<typeof ProposeScenePayloadSchema>;
+
 // ---------------------------------------------------------------------------
 
 /** GET /api/config — ログイン不要の公開設定。 */
@@ -440,6 +629,8 @@ export const WorkDetailResponseSchema = z.object({
   work: WorkSchema,
   thread: ChatThreadSchema,
   messages: z.array(ChatMessageSchema),
+  /** チャット内承認カードの台帳 (新しい順)。 */
+  proposals: z.array(z.lazy(() => ProposalSchema)),
   /** queued/leased の orchestrator ジョブと進捗末尾。実行中でなければ null。 */
   active_job: z
     .object({
@@ -496,8 +687,172 @@ export const ThreadContextResponseSchema = z.object({
   work: WorkSchema,
   thread: ChatThreadSchema,
   messages: z.array(ChatMessageSchema),
+  /** 蓄積済みの正典メモ (重複提案・再質問を防ぐため入力に含める)。 */
+  canon_facts: z.array(CanonFactSchema),
+  /** 未決定の提案 (pending のみ)。 */
+  proposals: z.array(ProposalSchema),
 });
 export type ThreadContextResponse = z.infer<typeof ThreadContextResponseSchema>;
+
+/** POST /api/internal/proposals — orchestrator が立てる提案の作成。 */
+export const CreateProposalRequestSchema = z.object({
+  work_id: z.string().min(1),
+  thread_id: z.string().min(1),
+  message_id: z.string().min(1),
+  kind: z.string().min(1),
+  payload: z.record(z.unknown()),
+});
+export type CreateProposalRequest = z.infer<typeof CreateProposalRequestSchema>;
+
+export const ProposalResponseSchema = z.object({
+  proposal: ProposalSchema,
+});
+export type ProposalResponse = z.infer<typeof ProposalResponseSchema>;
+
+/** POST /api/internal/works/:id/canon-facts — 正典メモ追加 (完全一致は重複スキップ)。 */
+export const AddCanonFactsRequestSchema = z.object({
+  statements: z.array(z.string().min(1)).min(1).max(50),
+  provenance: z.string().min(1),
+});
+export type AddCanonFactsRequest = z.infer<typeof AddCanonFactsRequestSchema>;
+
+export const CanonFactsResponseSchema = z.object({
+  canon_facts: z.array(CanonFactSchema),
+  /** 実際に追加された件数 (重複スキップ後)。 */
+  added: z.number().int(),
+});
+export type CanonFactsResponse = z.infer<typeof CanonFactsResponseSchema>;
+
+/** GET /api/internal/scenes/:id/context — generate_scene の入力材料。 */
+export const SceneContextResponseSchema = z.object({
+  scene: SceneSchema,
+  /** 最新の writing_contract (approved ゲートは runner 側でも再検証)。 */
+  contract: WritingContractSchema.nullable(),
+  work: WorkSchema,
+  canon_facts: z.array(CanonFactSchema),
+  /** 同一作品でこのシーンより前のシーン本文の抜粋。 */
+  prev_scenes: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      excerpt: z.string(),
+    }),
+  ),
+});
+export type SceneContextResponse = z.infer<typeof SceneContextResponseSchema>;
+
+/** POST /api/internal/scenes/:id/revisions — AI生成リビジョンの永続化。 */
+export const PersistRevisionRequestSchema = z.object({
+  content_json: z.unknown(),
+  source: RevisionSourceSchema,
+  /** 生成ジョブ由来なら job.id、手編集なら null。 */
+  job_id: z.string().min(1).nullable(),
+});
+export type PersistRevisionRequest = z.infer<
+  typeof PersistRevisionRequestSchema
+>;
+
+export const SceneRevisionResponseSchema = z.object({
+  revision: SceneRevisionSchema,
+});
+export type SceneRevisionResponse = z.infer<
+  typeof SceneRevisionResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// API: Phase 1b ユーザー向け (セッション認証)
+// ---------------------------------------------------------------------------
+
+/** POST /api/proposals/:id/approve の応答。 */
+export const ApproveProposalResponseSchema = z.object({
+  proposal: ProposalSchema,
+  episode: EpisodeSchema,
+  scene: SceneSchema,
+  contract: WritingContractSchema,
+  job: AgentJobSchema,
+});
+export type ApproveProposalResponse = z.infer<
+  typeof ApproveProposalResponseSchema
+>;
+
+/** GET /api/works/:id/prose — 本文タブのデータ一式。 */
+export const WorkProseResponseSchema = z.object({
+  episodes: z.array(EpisodeSchema),
+  scenes: z.array(SceneSchema),
+  revisions: z.array(SceneRevisionSchema),
+  contracts: z.array(WritingContractSchema),
+  canon_facts: z.array(CanonFactSchema),
+});
+export type WorkProseResponse = z.infer<typeof WorkProseResponseSchema>;
+
+/** POST /api/scenes/:id/rewrite — 指示つき再生成 (新リビジョン)。 */
+export const RewriteSceneRequestSchema = z.object({
+  instruction: z.string().min(1).max(4000),
+});
+export type RewriteSceneRequest = z.infer<typeof RewriteSceneRequestSchema>;
+
+/** POST /api/scenes/:id/revisions — 手編集による新リビジョン (spec §5.5)。 */
+export const CreateRevisionRequestSchema = z.object({
+  text: z.string().min(1).max(200000),
+});
+export type CreateRevisionRequest = z.infer<typeof CreateRevisionRequestSchema>;
+
+/** POST /api/works/:id/settings — provider/model/key の選択。 */
+export const WorkSettingsRequestSchema = z.object({
+  /** 使うキー (自分のキーのみ。null で解除→既定解決)。 */
+  key_id: z.string().nullable().optional(),
+  model: z.string().min(1).max(200).optional(),
+});
+export type WorkSettingsRequest = z.infer<typeof WorkSettingsRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Tiptap doc 変換 (本文の正本フォーマット, spec §8.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * 生成テキストを Tiptap doc JSON に変換する。
+ * 段落 = 非空の行 (日本語の小説本文は行=段落が基本)。
+ */
+export function textToTiptapDoc(text: string): Record<string, unknown> {
+  const paragraphs = text
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return {
+    type: "doc",
+    content: paragraphs.map((p) => ({
+      type: "paragraph",
+      content: [{ type: "text", text: p }],
+    })),
+  };
+}
+
+/** Tiptap doc JSON → プレーンテキスト (表示・手編集の textarea 用)。 */
+export function tiptapDocToText(doc: unknown): string {
+  if (
+    !doc ||
+    typeof doc !== "object" ||
+    !Array.isArray((doc as { content?: unknown[] }).content)
+  ) {
+    return "";
+  }
+  const paras: string[] = [];
+  for (const node of (doc as { content: unknown[] }).content) {
+    if (!node || typeof node !== "object") continue;
+    const inner = (node as { content?: unknown[] }).content;
+    if (!Array.isArray(inner)) continue;
+    const text = inner
+      .map((c) =>
+        c && typeof c === "object"
+          ? String((c as { text?: unknown }).text ?? "")
+          : "",
+      )
+      .join("");
+    paras.push(text);
+  }
+  return paras.join("\n\n");
+}
 
 /** POST /api/internal/threads/:id/messages — assistant メッセージ永続化 (job_id で冪等)。 */
 export const AppendMessageRequestSchema = z.object({
@@ -521,5 +876,8 @@ export const WorkPatchRequestSchema = z.object({
   premise: z.string().max(20000).optional(),
   genre: z.string().max(200).optional(),
   status: WorkStatusSchema.optional(),
+  /** StoryCharter / NarrativePolicy の確定内容 (spec §4.1, §6.1)。 */
+  charter: z.record(z.unknown()).optional(),
+  policy: z.record(z.unknown()).optional(),
 });
 export type WorkPatchRequest = z.infer<typeof WorkPatchRequestSchema>;

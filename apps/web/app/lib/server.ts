@@ -5,6 +5,7 @@ import {
   listMessages,
   listOpenJobsByWork,
   listProgress,
+  listProposalsByWork,
 } from "@houchi/database";
 import { depsContext } from "./context";
 
@@ -32,11 +33,13 @@ export async function getWorkDetail(
   if (!thread) return null;
   const messages = await listMessages(db, thread.id);
   const openJobs = await listOpenJobsByWork(db, work.id);
+  const proposals = await listProposalsByWork(db, work.id);
   const active = openJobs[0] ?? null;
   return {
     work,
     thread,
     messages,
+    proposals,
     active_job: active
       ? {
           job: { ...active, lease_token: null },
