@@ -110,6 +110,25 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
       });
       return { added: res.added };
     },
+    createChangeSet: async (req) => {
+      const res = await api.createChangeSet(req.work_id, {
+        title: req.title,
+        description: req.description ?? "",
+        ops: req.ops,
+        ...(req.message_id !== undefined
+          ? { message_id: req.message_id }
+          : {}),
+      });
+      return res.change_set;
+    },
+    fetchChangeSetContext: async (changeSetId) =>
+      api.getChangeSetContext(changeSetId),
+    recordReviewFindings: async (req) => {
+      const res = await api.recordReviewFindings(req.change_set_id, {
+        findings: req.findings.map((f) => ({ ...f, detail: f.detail ?? "" })),
+      });
+      return { added: res.added };
+    },
     enqueueJob: async (req) => {
       const res = await api.createJob({
         kind: req.kind,

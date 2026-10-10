@@ -15,6 +15,8 @@ import {
 import { api, ApiError } from "../lib/api";
 import { getWorkDetail, requireUser } from "../lib/server";
 import type {
+  ChangeSetInfo,
+  ChangeSetOp,
   KeyInfo,
   ProposalInfo,
   SceneInfo,
@@ -65,6 +67,54 @@ const WORK_STATUS_BADGE: Record<WorkInfo["status"], string> = {
   active: "badge badge--ok",
 };
 
+const CS_STATUS_LABEL: Record<ChangeSetInfo["status"], string> = {
+  proposed: "提案中",
+  approved: "承認済み",
+  rejected: "却下済み",
+  applied: "適用済み",
+};
+
+const CS_STATUS_BADGE: Record<ChangeSetInfo["status"], string> = {
+  proposed: "badge badge--warn",
+  approved: "badge badge--ok",
+  rejected: "badge",
+  applied: "badge badge--ok",
+};
+
+const CS_KIND_LABEL: Record<ChangeSetInfo["kind"], string> = {
+  normal: "変更提案",
+  manual_edit: "手編集",
+  force_override: "強制適用",
+};
+
+const OP_LABEL: Record<ChangeSetOp["op"], string> = {
+  retire_fact: "正典の廃止",
+  revise_fact: "正典の書き換え",
+  add_fact: "正典の追加",
+  update_work: "作品情報の更新",
+};
+
+const FINDING_SEV_LABEL: Record<string, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+function opText(op: ChangeSetOp): string {
+  switch (op.op) {
+    case "retire_fact":
+      return "正典を廃止する";
+    case "revise_fact":
+      return `正典を「${op.new_statement ?? ""}」に書き換える`;
+    case "add_fact":
+      return `正典に「${op.statement ?? ""}」を追加する`;
+    case "update_work": {
+      const keys = Object.entries(op.patch ?? {}).map(([k]) => k);
+      return `作品情報を更新する (${keys.join(", ")})`;
+    }
+  }
+}
+
 const STEP_LABEL: Record<string, string> = {
   call_provider: "AIに問い合わせています",
   persist_result: "結果を保存しています",
@@ -82,6 +132,12 @@ const STEP_LABEL: Record<string, string> = {
   revise: "改稿中",
   plan: "計画を作成しています",
   complete: "完了処理をしています",
+  // Phase 2b 変更セット / レビュー
+  create_change_set: "変更セットを作成しています",
+  fetch_context: "変更対象を読み込んでいます",
+  review_scene: "影響するシーンをレビューしています",
+  record_findings: "レビュー結果を記録しています",
+  report: "結果を報告しています",
 };
 
 export async function loader({
@@ -336,6 +392,91 @@ function ProposalCard({
   );
 }
 
+/** 変更セットの提案カード (対話メッセージの下に表示)。 */
+function ChangeSetCard({
+  cs,
+  onDecide,
+  onForce,
+  busy,
+}: {
+  cs: ChangeSetInfo;
+  onDecide: (id: string, action: "approve" | "reject") => void;
+  onForce: (id: string) => void;
+  busy: boolean;
+}) {
+  const cardStatus =
+    cs.status === "proposed"
+      ? "pending"
+      : cs.status === "rejected"
+        ? "rejected"
+        : "approved";
+  const openFindings = cs.findings.filter((f) => f.status === "open").length;
+  return (
+    <div className={`proposal-card ${cardStatus}`}>
+      <div className="proposal-head">
+        <span className="who">変更セットの提案 ({CS_KIND_LABEL[cs.kind]})</span>
+        <span className={CS_STATUS_BADGE[cs.status]}>
+          {CS_STATUS_LABEL[cs.status]}
+        </span>
+      </div>
+      <div className="proposal-body">
+        <strong>{cs.title}</strong>
+        {cs.description ? <p>{cs.description}</p> : null}
+        <p className="muted">{cs.impact.summary}</p>
+        <ul>
+          {cs.ops.map((op, i) => (
+            <li key={i}>{opText(op)}</li>
+          ))}
+        </ul>
+        {openFindings > 0 ? (
+          <p className="muted">
+            レビュー: {openFindings}件の指摘あり — 「変更」タブで確認できます。
+          </p>
+        ) : null}
+      </div>
+      {cs.status === "proposed" ? (
+        <div className="proposal-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDecide(cs.id, "approve")}
+          >
+            承認して適用
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => onDecide(cs.id, "reject")}
+          >
+            却下する
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => onForce(cs.id)}
+          >
+            強制的に変更
+          </button>
+        </div>
+      ) : null}
+      {cs.status === "rejected" ? (
+        <div className="proposal-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => onForce(cs.id)}
+          >
+            強制的に変更
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** 本文ビュー (Tiptap JSON → 段落描画 + リビジョン切替 + 書き直し/手編集)。 */
 function ProseView({
   scene,
@@ -467,7 +608,213 @@ function ProseView({
   );
 }
 
-type Tab = "chat" | "prose" | "materials" | "settings";
+/** 変更タブ: 変更セット一覧 + 詳細 (ops / 影響分析 / findings / 操作)。 */
+function ChangesView({
+  changeSets,
+  onDecide,
+  onForce,
+  onToggleFinding,
+  busy,
+}: {
+  changeSets: ChangeSetInfo[];
+  onDecide: (id: string, action: "approve" | "reject") => void;
+  onForce: (id: string) => void;
+  onToggleFinding: (id: string, status: "open" | "dismissed") => void;
+  busy: boolean;
+}) {
+  const sorted = useMemo(
+    () => [...changeSets].sort((a, b) => b.created_at - a.created_at),
+    [changeSets],
+  );
+  const [selId, setSelId] = useState<string | null>(null);
+  const sel = sorted.find((c) => c.id === selId) ?? null;
+  if (sorted.length === 0) {
+    return (
+      <div className="empty">
+        まだ変更セットがありません。対話で正典や作品情報の変更が提案されると、
+        ここに一覧が出ます。
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="scene-list">
+        {sorted.map((c) => {
+          const open = c.findings.filter((f) => f.status === "open").length;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              className={`scene-item${c.id === selId ? " active" : ""}`}
+              onClick={() => setSelId(c.id)}
+            >
+              {c.title}{" "}
+              <span className={CS_STATUS_BADGE[c.status]}>
+                {CS_STATUS_LABEL[c.status]}
+              </span>{" "}
+              <span className="muted">{CS_KIND_LABEL[c.kind]}</span>
+              {open > 0 ? (
+                <span className="muted"> 指摘{open}件</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+      {sel ? (
+        <div className="card">
+          <h2>
+            {sel.title}{" "}
+            <span className={CS_STATUS_BADGE[sel.status]}>
+              {CS_STATUS_LABEL[sel.status]}
+            </span>{" "}
+            <span className="badge">{CS_KIND_LABEL[sel.kind]}</span>
+          </h2>
+          {sel.description ? <p>{sel.description}</p> : null}
+
+          <strong>操作内容</strong>
+          <ul>
+            {sel.ops.map((op, i) => (
+              <li key={i}>
+                {OP_LABEL[op.op]}: {opText(op)}
+              </li>
+            ))}
+            {sel.ops.length === 0 ? <li>本文の手編集</li> : null}
+          </ul>
+
+          <strong>影響分析</strong>
+          <p className="muted">{sel.impact.summary}</p>
+          <dl className="contract">
+            {sel.impact.scenes.length > 0 ? (
+              <>
+                <dt>影響するシーン</dt>
+                <dd>
+                  <ul>
+                    {sel.impact.scenes.map((s) => (
+                      <li key={s.id}>
+                        {s.title} <span className="muted">— {s.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            ) : null}
+            {sel.impact.facts.length > 0 ? (
+              <>
+                <dt>文面が近い正典</dt>
+                <dd>
+                  <ul>
+                    {sel.impact.facts.map((f) => (
+                      <li key={f.id}>
+                        {f.statement}{" "}
+                        <span className="muted">— {f.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            ) : null}
+            {sel.impact.contracts.length > 0 ? (
+              <>
+                <dt>関係する契約</dt>
+                <dd>
+                  <ul>
+                    {sel.impact.contracts.map((c) => (
+                      <li key={c.id}>
+                        <span className="muted">{c.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            ) : null}
+          </dl>
+
+          {sel.findings.length > 0 ? (
+            <>
+              <strong>レビュー結果</strong>
+              <ul className="findings">
+                {sel.findings.map((f) => (
+                  <li
+                    key={f.id}
+                    className={f.status === "dismissed" ? "muted" : ""}
+                  >
+                    <span className="badge badge--warn">
+                      {FINDING_SEV_LABEL[f.severity] ?? f.severity}
+                    </span>{" "}
+                    {f.summary}
+                    {f.detail ? <p className="muted">{f.detail}</p> : null}
+                    {f.status === "dismissed" ? (
+                      <span className="muted">(確認済み) </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        onToggleFinding(
+                          f.id,
+                          f.status === "open" ? "dismissed" : "open",
+                        )
+                      }
+                    >
+                      {f.status === "open"
+                        ? "確認済みにする"
+                        : "未確認に戻す"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+
+          {sel.status === "proposed" ? (
+            <div className="form-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onDecide(sel.id, "approve")}
+              >
+                承認して適用
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => onDecide(sel.id, "reject")}
+              >
+                却下する
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => onForce(sel.id)}
+              >
+                強制的に変更
+              </button>
+            </div>
+          ) : null}
+          {sel.status === "rejected" ? (
+            <div className="form-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => onForce(sel.id)}
+              >
+                強制的に変更
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="empty">変更セットを選ぶと詳細が表示されます。</div>
+      )}
+    </div>
+  );
+}
+
+type Tab = "chat" | "prose" | "materials" | "changes" | "settings";
 
 export default function WorkPage({
   loaderData,
@@ -594,6 +941,45 @@ export default function WorkPage({
     }
   };
 
+  const decideChangeSet = async (id: string, action: "approve" | "reject") => {
+    setSending(true);
+    setError(null);
+    try {
+      if (action === "approve") await api.approveChangeSet(id, false);
+      else await api.rejectChangeSet(id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "操作に失敗しました");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const forceChangeSet = async (id: string) => {
+    setSending(true);
+    setError(null);
+    try {
+      await api.approveChangeSet(id, true);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "操作に失敗しました");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const toggleFinding = async (id: string, status: "open" | "dismissed") => {
+    setSending(true);
+    try {
+      await api.setFindingStatus(id, status);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "操作に失敗しました");
+    } finally {
+      setSending(false);
+    }
+  };
+
   const rewriteScene = async (instruction: string) => {
     if (!sceneId) return;
     setSending(true);
@@ -653,6 +1039,11 @@ export default function WorkPage({
   const proposalByMessage = new Map(
     detail.proposals.map((p) => [p.message_id, p]),
   );
+  const changeSetByMessage = new Map(
+    detail.change_sets
+      .filter((c) => c.message_id !== null)
+      .map((c) => [c.message_id as string, c]),
+  );
   const selectedScene =
     prose?.scenes.find((s) => s.id === sceneId) ?? null;
   const selectedRevisions =
@@ -662,6 +1053,7 @@ export default function WorkPage({
     { key: "chat", label: "対話" },
     { key: "prose", label: "本文" },
     { key: "materials", label: "資料" },
+    { key: "changes", label: "変更" },
     { key: "settings", label: "設定" },
   ];
 
@@ -704,13 +1096,26 @@ export default function WorkPage({
                   </div>
                   {(() => {
                     const proposal = proposalByMessage.get(m.id);
-                    return proposal ? (
-                      <ProposalCard
-                        proposal={proposal}
-                        onDecide={(id, a) => void decideProposal(id, a)}
-                        busy={sending || running}
-                      />
-                    ) : null;
+                    const cs = changeSetByMessage.get(m.id);
+                    return (
+                      <>
+                        {proposal ? (
+                          <ProposalCard
+                            proposal={proposal}
+                            onDecide={(id, a) => void decideProposal(id, a)}
+                            busy={sending || running}
+                          />
+                        ) : null}
+                        {cs ? (
+                          <ChangeSetCard
+                            cs={cs}
+                            onDecide={(id, a) => void decideChangeSet(id, a)}
+                            onForce={(id) => void forceChangeSet(id)}
+                            busy={sending || running}
+                          />
+                        ) : null}
+                      </>
+                    );
                   })()}
                 </div>
               ))}
@@ -756,6 +1161,8 @@ export default function WorkPage({
               <dd>{work.genre || "未設定"}</dd>
               <dt>前提</dt>
               <dd>{work.premise || "未設定"}</dd>
+              <dt>正典リビジョン</dt>
+              <dd>rev{work.canon_rev}</dd>
             </dl>
             <p className="side-note">
               作品情報はオーケストレーターとの対話で更新されます。
@@ -869,6 +1276,18 @@ export default function WorkPage({
               ) : null}
             </>
           )}
+        </section>
+      ) : null}
+
+      {tab === "changes" ? (
+        <section>
+          <ChangesView
+            changeSets={detail.change_sets}
+            onDecide={(id, a) => void decideChangeSet(id, a)}
+            onForce={(id) => void forceChangeSet(id)}
+            onToggleFinding={(id, s) => void toggleFinding(id, s)}
+            busy={sending || running}
+          />
         </section>
       ) : null}
 

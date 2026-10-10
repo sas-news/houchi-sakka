@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
@@ -76,6 +77,8 @@ export const works = sqliteTable(
     provider: text("provider"),
     model: text("model"),
     keyRef: text("key_ref"),
+    /** 現在の正典リビジョン (spec §6.3。変更セット適用ごとに +1)。 */
+    canonRev: integer("canon_rev").notNull().default(0),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -153,6 +156,8 @@ export const sceneRevisions = sqliteTable(
     /** ai | manual_edit */
     source: text("source").notNull(),
     jobId: text("job_id"),
+    /** このリビジョンを記録した変更セット (手編集の紐付け, spec §5.5)。 */
+    changeSetId: text("change_set_id"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
@@ -182,12 +187,19 @@ export const canonFacts = sqliteTable(
     workId: text("work_id").notNull(),
     statement: text("statement").notNull(),
     provenance: text("provenance").notNull(),
+    /** この行が現行になった正典リビジョン (spec §6.3。無バージョン追加は NULL)。 */
+    validFromRev: integer("valid_from_rev"),
+    /** 閉じられた正典リビジョン (NULL=現行)。 */
+    validToRev: integer("valid_to_rev"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
     index("canon_facts_work_idx").on(t.workId),
-    // statement 完全一致の重複を DB 制約でも防ぐ
-    uniqueIndex("canon_facts_work_statement_uq").on(t.workId, t.statement),
+    // statement 完全一致の重複を「現行行」のみで防ぐ
+    // (閉じた行は同じ statement を再登録できるように partial unique)
+    uniqueIndex("canon_facts_work_statement_current_uq")
+      .on(t.workId, t.statement)
+      .where(sql`valid_to_rev IS NULL`),
   ],
 );
 
@@ -238,6 +250,63 @@ export const dependencyEdges = sqliteTable(
       t.targetKind,
       t.targetRef,
     ),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Phase 2b: 変更セット + レビュー所見 (spec §5, §5.5, §6.3)
+// ---------------------------------------------------------------------------
+
+export const changeSets = sqliteTable(
+  "change_sets",
+  {
+    id: text("id").primaryKey(),
+    workId: text("work_id").notNull(),
+    /** normal | manual_edit | force_override */
+    kind: text("kind").notNull().default("normal"),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    /** ChangeSetOp[] の JSON。 */
+    ops: text("ops").notNull(),
+    /** proposed | approved | rejected | applied */
+    status: text("status").notNull().default("proposed"),
+    /** ChangeSetImpact の JSON (作成時に決定的に計算)。 */
+    impact: text("impact").notNull(),
+    /** 強制適用で 1 (spec §5.4)。 */
+    force: integer("force").notNull().default(0),
+    /** 提案を出したチャットメッセージ (カード紐付け)。 */
+    messageId: text("message_id"),
+    createdAt: integer("created_at").notNull(),
+    decidedAt: integer("decided_at"),
+    appliedAt: integer("applied_at"),
+  },
+  (t) => [
+    index("change_sets_work_idx").on(t.workId, t.createdAt),
+    // 同一メッセージからの変更セット重複作成を防ぐ (orchestrator 再開の冪等)
+    uniqueIndex("change_sets_message_uq").on(t.messageId),
+  ],
+);
+
+export const reviewFindings = sqliteTable(
+  "review_findings",
+  {
+    id: text("id").primaryKey(),
+    changeSetId: text("change_set_id").notNull(),
+    /** conflict | info */
+    kind: text("kind").notNull(),
+    /** high | medium | low */
+    severity: text("severity").notNull(),
+    summary: text("summary").notNull(),
+    detail: text("detail").notNull().default(""),
+    sceneId: text("scene_id"),
+    factId: text("fact_id"),
+    /** open | dismissed */
+    status: text("status").notNull().default("open"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("review_findings_change_set_idx").on(t.changeSetId),
+    index("review_findings_scene_idx").on(t.sceneId),
   ],
 );
 
