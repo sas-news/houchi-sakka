@@ -11,14 +11,11 @@
       "@houchi/contracts": [
         "../contracts/src/index.ts"
       ],
-      "@houchi/providers": [
-        "../providers/src/index.ts"
+      "@houchi/database": [
+        "../database/src/index.ts"
       ],
-      "@houchi/prompts": [
-        "../prompts/src/index.ts"
-      ],
-      "@houchi/skills": [
-        "../skills/src/index.ts"
+      "@houchi/database/testing": [
+        "../database/src/testing.ts"
       ]
     },
     "rootDir": "../.."

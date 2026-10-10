@@ -10,15 +10,6 @@
     "paths": {
       "@houchi/contracts": [
         "../contracts/src/index.ts"
-      ],
-      "@houchi/providers": [
-        "../providers/src/index.ts"
-      ],
-      "@houchi/prompts": [
-        "../prompts/src/index.ts"
-      ],
-      "@houchi/skills": [
-        "../skills/src/index.ts"
       ]
     },
     "rootDir": "../.."

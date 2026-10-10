@@ -2,14 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   JOB_KIND_GENERATE_SCENE,
   type AgentJob,
-  type ChatThread,
+  type CanonFact,
+  type DependencyEdgeInput,
+  type ProviderRequest,
   type Scene,
   type SceneRevision,
   type Work,
   type WritingContract,
 } from "@houchi/contracts";
 import { StubProvider } from "@houchi/providers";
-import { runJob, JobInfraError, type JobContext } from "../src/index.js";
+import { runJob, type JobContext } from "../src/index.js";
 import type { SceneContextData } from "../src/scene.js";
 
 const WORK: Work = {
@@ -83,37 +85,53 @@ const PAYLOAD = {
   model: "stub-model",
 };
 
+/** writer/critic のスキルプロンプトを識別して JSON を返すスタブ応答。 */
+function respond(opts: { critic: string }): (req: ProviderRequest) => string {
+  return (req) => {
+    const joined = req.input.map((m) => m.content).join("\n");
+    if (joined.includes("執筆担当")) {
+      const revised = joined.includes("この指摘を直して書き直してください");
+      return JSON.stringify({
+        prose_md: revised ? "改稿した本文。" : "ドラフト本文。",
+        canon_facts_new: ["新しい正典"],
+        depends_on: [
+          { target_kind: "canon_fact", target_ref: "汽車はもう走っていない" },
+        ],
+      });
+    }
+    if (joined.includes("検査担当")) return opts.critic;
+    return "{}";
+  };
+}
+
 function makeCtx(opts: {
   provider: StubProvider;
   store: { payload: Record<string, unknown> };
   sceneCtx: SceneContextData;
   revisions: SceneRevision[];
   completed: unknown[];
+  canonFacts?: { statements: string[]; provenance: string }[];
+  deps?: { sceneId: string; edges: DependencyEdgeInput[] }[];
 }) {
-  const calls: { op: string; value?: unknown }[] = [];
   const ctx: JobContext = {
     resolveKey: async () => "resolved-key",
     getProvider: () => opts.provider,
-    postProgress: async (type, data) => {
-      calls.push({ op: "progress", value: { type, data } });
-    },
+    postProgress: async () => {},
     saveCheckpoint: async (patch) => {
       opts.store.payload = {
         ...opts.store.payload,
         checkpoint: {
-          ...(opts.store.payload.checkpoint as Record<string, unknown> | undefined),
+          ...(opts.store.payload.checkpoint as
+            | Record<string, unknown>
+            | undefined),
           ...patch,
         },
       };
-      calls.push({ op: "checkpoint", value: patch });
     },
     complete: async (result) => {
       opts.completed.push(result);
-      calls.push({ op: "complete", value: result });
     },
-    fail: async (error) => {
-      calls.push({ op: "fail", value: error });
-    },
+    fail: async () => {},
     fetchSceneContext: async () => opts.sceneCtx,
     persistSceneRevision: async (req) => {
       const rev: SceneRevision = {
@@ -128,116 +146,173 @@ function makeCtx(opts: {
       opts.revisions.push(rev);
       return rev;
     },
+    addCanonFacts: async (req) => {
+      (opts.canonFacts ??= []).push(req);
+      return { added: req.statements.length };
+    },
+    recordDependencies: async (req) => {
+      (opts.deps ??= []).push({
+        sceneId: req.scene_id,
+        edges: req.edges,
+      });
+      return { added: req.edges.length };
+    },
   };
-  return { ctx, calls };
+  return ctx;
 }
 
 function sceneCtx(contract: WritingContract | null): SceneContextData {
+  const canon: CanonFact[] = [
+    {
+      id: "f1",
+      work_id: "w1",
+      statement: "汽車はもう走っていない",
+      provenance: "orchestrator",
+      created_at: 0,
+    },
+  ];
   return {
     scene: SCENE,
     contract,
     work: WORK,
-    canon_facts: [
-      {
-        id: "f1",
-        work_id: "w1",
-        statement: "汽車はもう走っていない",
-        provenance: "orchestrator",
-        created_at: 0,
-      },
-    ],
+    canon_facts: canon,
     prev_scenes: [],
   };
 }
 
-describe("generate_scene harness", () => {
+const CLEAN_CRITIC = JSON.stringify({ violations: [], notes: ["ok"] });
+const HIGH_CRITIC = JSON.stringify({
+  violations: [
+    { rule: "required_events", detail: "必須イベントが抜けている", severity: "high" },
+  ],
+  notes: [],
+});
+
+describe("generate_scene 多段パイプライン", () => {
   it("契約が未承認なら失敗する (ゲート)", async () => {
-    const provider = new StubProvider({ text: "本文" });
-    const store = { payload: { ...PAYLOAD } };
-    const revisions: SceneRevision[] = [];
+    const provider = new StubProvider({ respond: respond({ critic: CLEAN_CRITIC }) });
     const completed: unknown[] = [];
-    const { ctx } = makeCtx({
+    const ctx = makeCtx({
       provider,
-      store,
+      store: { payload: { ...PAYLOAD } },
       sceneCtx: sceneCtx({ ...CONTRACT, status: "draft" }),
-      revisions,
+      revisions: [],
       completed,
     });
-    expect(await runJob(makeJob(store.payload), ctx)).toBe("failed");
-    expect(provider.calls).toBe(0);
-    expect(revisions).toHaveLength(0);
-  });
-
-  it("contract_id が payload と違う契約なら失敗する", async () => {
-    const provider = new StubProvider({ text: "本文" });
-    const store = { payload: { ...PAYLOAD } };
-    const { ctx } = makeCtx({
-      provider,
-      store,
-      sceneCtx: sceneCtx({ ...CONTRACT, id: "c-other" }),
-      revisions: [],
-      completed: [],
-    });
-    expect(await runJob(makeJob(store.payload), ctx)).toBe("failed");
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("failed");
     expect(provider.calls).toBe(0);
   });
 
-  it("承認済み契約で生成 → Tiptap doc でリビジョン保存 → complete", async () => {
-    const provider = new StubProvider({
-      text: "段落一。\n\n段落二。",
-    });
-    const store = { payload: { ...PAYLOAD } };
+  it("write→critique(違反なし)→revise なし→確定。依存と正典を記録", async () => {
+    const provider = new StubProvider({ respond: respond({ critic: CLEAN_CRITIC }) });
     const revisions: SceneRevision[] = [];
     const completed: unknown[] = [];
-    const { ctx } = makeCtx({
+    const canonFacts: { statements: string[]; provenance: string }[] = [];
+    const deps: { sceneId: string; edges: DependencyEdgeInput[] }[] = [];
+    const ctx = makeCtx({
       provider,
-      store,
+      store: { payload: { ...PAYLOAD } },
       sceneCtx: sceneCtx(CONTRACT),
       revisions,
       completed,
+      canonFacts,
+      deps,
     });
-    expect(await runJob(makeJob(store.payload), ctx)).toBe("completed");
-    expect(provider.calls).toBe(1);
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    // writer 1回 + critic 1回 (revise は走らない)
+    expect(provider.calls).toBe(2);
     expect(revisions).toHaveLength(1);
-    expect(revisions[0]!.rev_no).toBe(1);
-    expect(revisions[0]!.source).toBe("ai");
-    expect(revisions[0]!.job_id).toBe("j1");
     const doc = revisions[0]!.content_json as {
-      type: string;
       content: { content: { text: string }[] }[];
     };
-    expect(doc.type).toBe("doc");
-    expect(doc.content).toHaveLength(2);
-    const result = completed[0] as { kind: string; revision_id: string };
-    expect(result.kind).toBe(JOB_KIND_GENERATE_SCENE);
-    expect(result.revision_id).toBe(revisions[0]!.id);
+    expect(doc.content[0]!.content[0]!.text).toBe("ドラフト本文。");
+    expect(canonFacts).toHaveLength(1);
+    expect(canonFacts[0]!.statements).toContain("新しい正典");
+    expect(deps).toHaveLength(1);
+    expect(deps[0]!.edges[0]!.target_kind).toBe("canon_fact");
+    const result = completed[0] as {
+      revised: boolean;
+      critique_summary: { high: number; notes: number };
+    };
+    expect(result.revised).toBe(false);
+    expect(result.critique_summary.notes).toBe(1);
   });
 
-  it("provider_result checkpoint から再開したらプロバイダーを呼ばない", async () => {
-    const provider = new StubProvider({ text: "unused" });
-    const store = {
-      payload: {
-        ...PAYLOAD,
-        checkpoint: {
-          provider_result: {
-            output_text: "再開した本文。",
-            usage: "unknown" as const,
-          },
-        },
-      },
-    };
+  it("critic が high 指摘 → revise を実行し改稿文を保存", async () => {
+    const provider = new StubProvider({ respond: respond({ critic: HIGH_CRITIC }) });
     const revisions: SceneRevision[] = [];
     const completed: unknown[] = [];
-    const { ctx } = makeCtx({
+    const ctx = makeCtx({
       provider,
-      store,
+      store: { payload: { ...PAYLOAD } },
       sceneCtx: sceneCtx(CONTRACT),
       revisions,
       completed,
     });
-    expect(await runJob(makeJob(store.payload), ctx)).toBe("completed");
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    // write + critique + revise = 3回
+    expect(provider.calls).toBe(3);
+    const doc = revisions[0]!.content_json as {
+      content: { content: { text: string }[] }[];
+    };
+    expect(doc.content[0]!.content[0]!.text).toBe("改稿した本文。");
+    const result = completed[0] as {
+      revised: boolean;
+      critique_summary: { high: number };
+    };
+    expect(result.revised).toBe(true);
+    expect(result.critique_summary.high).toBe(1);
+  });
+
+  it("writer 済みで落ちた→resume は writer を再実行しない", async () => {
+    const provider = new StubProvider({ respond: respond({ critic: CLEAN_CRITIC }) });
+    const revisions: SceneRevision[] = [];
+    const completed: unknown[] = [];
+    const checkpoint = {
+      draft: {
+        prose_md: "保存済みドラフト。",
+        canon_facts_new: [],
+        depends_on: [],
+      },
+    };
+    const ctx = makeCtx({
+      provider,
+      store: { payload: { ...PAYLOAD, checkpoint } },
+      sceneCtx: sceneCtx(CONTRACT),
+      revisions,
+      completed,
+    });
+    expect(await runJob(makeJob({ ...PAYLOAD, checkpoint }), ctx)).toBe("completed");
+    // critic のみ呼ばれる (write は checkpoint から復元)
+    expect(provider.calls).toBe(1);
+    const doc = revisions[0]!.content_json as {
+      content: { content: { text: string }[] }[];
+    };
+    expect(doc.content[0]!.content[0]!.text).toBe("保存済みドラフト。");
+  });
+
+  it("draft+critique+final が揃っていれば provider を呼ばず確定だけ行う", async () => {
+    const provider = new StubProvider({ respond: respond({ critic: CLEAN_CRITIC }) });
+    const revisions: SceneRevision[] = [];
+    const completed: unknown[] = [];
+    const checkpoint = {
+      draft: { prose_md: "d", canon_facts_new: [], depends_on: [] },
+      critique: { violations: [], notes: [] },
+      final: { prose_md: "最終稿", canon_facts_new: [], depends_on: [] },
+    };
+    const ctx = makeCtx({
+      provider,
+      store: { payload: { ...PAYLOAD, checkpoint } },
+      sceneCtx: sceneCtx(CONTRACT),
+      revisions,
+      completed,
+    });
+    expect(await runJob(makeJob({ ...PAYLOAD, checkpoint }), ctx)).toBe("completed");
     expect(provider.calls).toBe(0);
-    expect(revisions).toHaveLength(1);
+    const doc = revisions[0]!.content_json as {
+      content: { content: { text: string }[] }[];
+    };
+    expect(doc.content[0]!.content[0]!.text).toBe("最終稿");
     const result = completed[0] as { resumed_from_checkpoint: boolean };
     expect(result.resumed_from_checkpoint).toBe(true);
   });

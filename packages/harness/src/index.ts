@@ -1,6 +1,7 @@
 import {
   JOB_KIND_GENERATE_SCENE,
   JOB_KIND_ORCHESTRATOR_TURN,
+  JOB_KIND_PLAN_WORK,
   JOB_KIND_SMOKE_GENERATE,
   SmokeGeneratePayloadSchema,
   type AgentJob,
@@ -8,15 +9,18 @@ import {
   type ChatMessage,
   type ChatRole,
   type ChatThread,
+  type DependencyEdgeInput,
   type ProgressEventType,
   type Proposal,
   type SceneRevision,
   type SmokeGenerateResult,
   type Work,
   type WorkPatchRequest,
+  type WorkspaceFile,
 } from "@houchi/contracts";
 import type { Provider, TokenCallback } from "@houchi/providers";
 import { runOrchestratorTurn } from "./orchestrator.js";
+import { runPlanWork } from "./plan.js";
 import { runGenerateScene, type SceneContextData } from "./scene.js";
 
 /**
@@ -50,6 +54,10 @@ export interface OrchestratorContextData {
   canon_facts: CanonFact[];
   /** 作品の提案一覧 (pending 判定はこちら側で行う)。 */
   proposals: Proposal[];
+  /** workspace のファイル一覧 (一覧+要約のみ。Phase 2a)。 */
+  workspace_files: WorkspaceFile[];
+  /** /plan/tree.md の内容 (planner の入力にも使う)。 */
+  plan_tree: string;
 }
 
 /**
@@ -112,6 +120,23 @@ export interface JobContext {
     source: "ai" | "manual_edit";
     job_id: string | null;
   }): Promise<SceneRevision>;
+  /** generate_scene: writer の依存宣言を dependency_edges に記録する。 */
+  recordDependencies?(input: {
+    scene_id: string;
+    work_id: string;
+    edges: DependencyEdgeInput[];
+  }): Promise<{ added: number }>;
+  /**
+   * オーケストレーターのマーカーから別ジョブを起票する
+   * (<<RUN_PLAN>> → plan_work など)。idempotency_key で冪等。
+   */
+  enqueueJob?(input: {
+    kind: string;
+    work_ref: string;
+    user_ref: string;
+    payload: Record<string, unknown>;
+    idempotency_key: string;
+  }): Promise<AgentJob>;
 }
 
 export type JobHandler = (job: AgentJob, ctx: JobContext) => Promise<void>;
@@ -184,6 +209,7 @@ export function createDefaultHandlers(): JobHandlers {
     [JOB_KIND_SMOKE_GENERATE]: runSmokeGenerate,
     [JOB_KIND_ORCHESTRATOR_TURN]: runOrchestratorTurn,
     [JOB_KIND_GENERATE_SCENE]: runGenerateScene,
+    [JOB_KIND_PLAN_WORK]: runPlanWork,
   };
 }
 

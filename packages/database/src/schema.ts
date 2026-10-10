@@ -214,6 +214,34 @@ export const proposals = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// Phase 2a: 依存エッジ (spec §6.1/§6.4 DependencyEdge)
+// ---------------------------------------------------------------------------
+
+export const dependencyEdges = sqliteTable(
+  "dependency_edges",
+  {
+    id: text("id").primaryKey(),
+    workId: text("work_id").notNull(),
+    sceneId: text("scene_id").notNull(),
+    /** 依存先の種別 (canon_fact | plan | scene | contract …)。 */
+    targetKind: text("target_kind").notNull(),
+    /** 依存先の参照 (宣言側の言い方のまま)。 */
+    targetRef: text("target_ref").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("dependency_edges_work_idx").on(t.workId),
+    index("dependency_edges_scene_idx").on(t.sceneId),
+    // 同じ宣言の重複記録を防ぐ (resume の冪等)
+    uniqueIndex("dependency_edges_scene_target_uq").on(
+      t.sceneId,
+      t.targetKind,
+      t.targetRef,
+    ),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // better-auth の管理テーブル (Phase 1a, OAuth ログイン用)。
 // 列名・型は better-auth drizzle adapter の想定スキーマに合わせる。
 // ---------------------------------------------------------------------------

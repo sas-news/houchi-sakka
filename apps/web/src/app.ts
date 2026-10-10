@@ -1,7 +1,9 @@
 import {
   AddCanonFactsRequestSchema,
   AppendMessageRequestSchema,
+  ApprovePlanProposalResponseSchema,
   ApproveProposalResponseSchema,
+  ApproveWorkspaceWriteResponseSchema,
   CompleteRequestSchema,
   CreateJobRequestSchema,
   CreateKeyRequestSchema,
@@ -16,17 +18,32 @@ import {
   JOB_KIND_ORCHESTRATOR_TURN,
   LeaseRequestSchema,
   PersistRevisionRequestSchema,
+  PlanProposalPayloadSchema,
   ProgressRequestSchema,
+  PROPOSAL_KIND_PLAN,
+  PROPOSAL_KIND_WORKSPACE_WRITE,
+  PROPOSAL_KIND_WRITING_CONTRACT,
+  RecordDependenciesRequestSchema,
   ResolveKeyRequestSchema,
   RewriteSceneRequestSchema,
   tiptapDocToText,
   WorkPatchRequestSchema,
   WorkSettingsRequestSchema,
+  WorkspaceWriteRequestSchema,
   type AgentJob,
   type ApiErrorCode,
 } from "@houchi/contracts";
 import {
-  addCanonFacts,
+  buildPlanTree,
+  listFiles as listWorkspaceFiles,
+  parseCanonStatements,
+  PATH_CANON_FACTS,
+  readFile as readWorkspaceFile,
+  writePropose as workspaceWritePropose,
+} from "@houchi/workspace";
+import {
+  addCanonFacts as repoAddCanonFacts,
+  addDependencyEdges,
   appendMessage,
   appendProgress,
   completeJob,
@@ -476,6 +493,34 @@ export function createApp(deps: WebDeps): FetchHandler {
           });
         }
 
+        // GET /api/works/:id/workspace/files — 資料タブ用の仮想ファイル一覧
+        const workspaceFilesPath = pathname.match(
+          /^\/api\/works\/([^/]+)\/workspace\/files$/,
+        );
+        if (method === "GET" && workspaceFilesPath) {
+          const work = await getWorkById(db, workspaceFilesPath[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const files = await listWorkspaceFiles(db, work);
+          return json({ files });
+        }
+
+        // GET /api/works/:id/workspace/file?path= — 仮想ファイルの内容
+        const workspaceFilePath = pathname.match(
+          /^\/api\/works\/([^/]+)\/workspace\/file$/,
+        );
+        if (method === "GET" && workspaceFilePath) {
+          const work = await getWorkById(db, workspaceFilePath[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const filePath = url.searchParams.get("path") ?? "";
+          const file = await readWorkspaceFile(db, work, filePath);
+          if (!file) return err(404, "not_found", "file not found");
+          return json(file);
+        }
+
         // PATCH /api/works/:id/settings — provider/model/key の選択
         const workSettings = pathname.match(
           /^\/api\/works\/([^/]+)\/settings$/,
@@ -530,6 +575,124 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (proposal.status !== "pending") {
             return err(400, "bad_request", "この提案はすでに決定済みです");
           }
+
+          // --- kind="plan": 計画提案の承認で episodes/scenes を一括作成 ---
+          if (proposal.kind === PROPOSAL_KIND_PLAN) {
+            if (action === "reject") {
+              const updated = await updateProposalStatus(db, {
+                id: proposal.id,
+                status: "rejected",
+              });
+              await appendMessage(db, {
+                threadId: proposal.thread_id,
+                role: "assistant",
+                content:
+                  "計画案を却下しました。どこを変えますか? " +
+                  "対話で指示をもらえれば、もう一度計画を立て直せます。",
+              });
+              return json({ proposal: updated });
+            }
+            const planParsed = PlanProposalPayloadSchema.safeParse(
+              proposal.payload,
+            );
+            if (!planParsed.success) {
+              return err(500, "internal", "plan proposal payload is invalid");
+            }
+            const episodes = [];
+            const scenes = [];
+            for (const ep of planParsed.data.episodes) {
+              const episode = await createEpisode(db, {
+                workId: work.id,
+                title: ep.title,
+              });
+              episodes.push(episode);
+              for (const sc of ep.scenes) {
+                scenes.push(
+                  await createScene(db, {
+                    episodeId: episode.id,
+                    title: sc.title,
+                    purpose: sc.purpose,
+                    status: "draft",
+                  }),
+                );
+              }
+            }
+            const updatedProposal = await updateProposalStatus(db, {
+              id: proposal.id,
+              status: "approved",
+            });
+            await appendMessage(db, {
+              threadId: proposal.thread_id,
+              role: "assistant",
+              content: `計画を承認しました。話 ${episodes.length}件・シーン ${scenes.length}件を作成しました。`,
+            });
+            const body = ApprovePlanProposalResponseSchema.parse({
+              proposal: updatedProposal,
+              episodes,
+              scenes,
+            });
+            return json(body);
+          }
+
+          // --- kind="workspace_write": workspace 書き込み提案の決定 ---
+          if (proposal.kind === PROPOSAL_KIND_WORKSPACE_WRITE) {
+            const wp = proposal.payload as {
+              path?: string;
+              content?: string;
+              supported?: boolean;
+            };
+            if (action === "reject") {
+              const updated = await updateProposalStatus(db, {
+                id: proposal.id,
+                status: "rejected",
+              });
+              await appendMessage(db, {
+                threadId: proposal.thread_id,
+                role: "assistant",
+                content: `資料「${wp.path ?? ""}」への書き込み提案を却下しました。`,
+              });
+              return json({ proposal: updated });
+            }
+            // /canon/facts.md への追記のみ apply 可能
+            if (wp.supported !== true || wp.path !== PATH_CANON_FACTS) {
+              const updated = await updateProposalStatus(db, {
+                id: proposal.id,
+                status: "approved",
+              });
+              await appendMessage(db, {
+                threadId: proposal.thread_id,
+                role: "assistant",
+                content: `資料「${wp.path ?? ""}」への書き込みはまだ対応していないため、提案は記録のみ残しました。`,
+              });
+              const body = ApproveWorkspaceWriteResponseSchema.parse({
+                proposal: updated,
+                added: 0,
+              });
+              return json(body);
+            }
+            const statements = parseCanonStatements(wp.content ?? "");
+            const { added } = await repoAddCanonFacts(db, {
+              workId: work.id,
+              statements,
+              provenance: `workspace_write:${proposal.id}`,
+            });
+            const updatedProposal = await updateProposalStatus(db, {
+              id: proposal.id,
+              status: "approved",
+            });
+            await appendMessage(db, {
+              threadId: proposal.thread_id,
+              role: "assistant",
+              content: `正典メモに ${added} 件追加しました。`,
+            });
+            const body = ApproveWorkspaceWriteResponseSchema.parse({
+              proposal: updatedProposal,
+              added,
+            });
+            return json(body);
+          }
+
+          // --- kind="writing_contract": 契約・シーン承認で本文生成を投下 ---
           const p = proposal.payload as {
             episode_id?: string;
             scene_id?: string;
@@ -828,12 +991,17 @@ export function createApp(deps: WebDeps): FetchHandler {
         const messages = await listMessages(db, thread.id);
         const canonFacts = await listCanonFactsByWork(db, work.id);
         const proposals = await listProposalsByWork(db, work.id);
+        // workspace のファイル一覧+計画ツリー (orchestrator/planner の材料)
+        const workspaceFiles = await listWorkspaceFiles(db, work);
+        const planTree = await buildPlanTree(db, work.id);
         return json({
           work,
           thread,
           messages,
           canon_facts: canonFacts,
           proposals,
+          workspace_files: workspaceFiles,
+          plan_tree: planTree,
         });
       }
 
@@ -875,14 +1043,28 @@ export function createApp(deps: WebDeps): FetchHandler {
         return json({ work });
       }
 
-      // POST /api/internal/proposals — PROPOSE マーカーの実体化。
-      // episode/scene/contract/proposal をまとめて作り、決定に必要な ID を
-      // proposal.payload に入れて返す (message_id+kind で冪等)。
+      // POST /api/internal/proposals — 提案の実体化。
+      // kind="writing_contract" は episode/scene/contract もまとめて作り
+      // 決定に必要な ID を payload に入れる。それ以外の kind (plan /
+      // workspace_write) は payload をそのまま記録する (message_id+kind で冪等)。
       if (method === "POST" && pathname === "/api/internal/proposals") {
         const body = await parseBody(request, CreateProposalRequestSchema);
         if (body instanceof Response) return body;
         const work = await getWorkById(db, body.work_id);
         if (!work) return err(404, "not_found", "work not found");
+
+        if (body.kind !== PROPOSAL_KIND_WRITING_CONTRACT) {
+          // plan / workspace_write 等: 実体化せず提案のみ記録
+          const proposal = await createProposal(db, {
+            workId: work.id,
+            threadId: body.thread_id,
+            messageId: body.message_id,
+            kind: body.kind,
+            payload: body.payload,
+          });
+          return json({ proposal });
+        }
+
         const p = body.payload as {
           episode_title?: string;
           scene_title?: string;
@@ -936,7 +1118,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (body instanceof Response) return body;
         const work = await getWorkById(db, canonPath[1]!);
         if (!work) return err(404, "not_found", "work not found");
-        const { canonFacts, added } = await addCanonFacts(db, {
+        const { canonFacts, added } = await repoAddCanonFacts(db, {
           workId: work.id,
           statements: body.statements,
           provenance: body.provenance,
@@ -979,6 +1161,44 @@ export function createApp(deps: WebDeps): FetchHandler {
           canon_facts: canonFacts,
           prev_scenes: prevScenes,
         });
+      }
+
+      // POST /api/internal/scenes/:id/dependencies — writer の依存宣言の記録
+      const depsPath = pathname.match(
+        /^\/api\/internal\/scenes\/([^/]+)\/dependencies$/,
+      );
+      if (method === "POST" && depsPath) {
+        const body = await parseBody(request, RecordDependenciesRequestSchema);
+        if (body instanceof Response) return body;
+        const scene = await getSceneById(db, depsPath[1]!);
+        if (!scene) return err(404, "not_found", "scene not found");
+        const episode = await getEpisodeById(db, scene.episode_id);
+        if (!episode) return err(404, "not_found", "episode not found");
+        const { edges, added } = await addDependencyEdges(db, {
+          workId: episode.work_id,
+          sceneId: scene.id,
+          edges: body.edges,
+        });
+        return json({ edges, added });
+      }
+
+      // POST /api/internal/works/:id/workspace/write — エージェントの書き込み提案
+      // (常に proposal 化。直接確定しない)
+      const wsWritePath = pathname.match(
+        /^\/api\/internal\/works\/([^/]+)\/workspace\/write$/,
+      );
+      if (method === "POST" && wsWritePath) {
+        const body = await parseBody(request, WorkspaceWriteRequestSchema);
+        if (body instanceof Response) return body;
+        const work = await getWorkById(db, wsWritePath[1]!);
+        if (!work) return err(404, "not_found", "work not found");
+        const { proposal, supported } = await workspaceWritePropose(db, {
+          workId: work.id,
+          path: body.path,
+          content: body.content,
+          provenance: body.provenance,
+        });
+        return json({ proposal, supported });
       }
 
       // POST /api/internal/scenes/:id/revisions — 生成成果の確定

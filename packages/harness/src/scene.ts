@@ -3,14 +3,20 @@ import {
   JOB_KIND_GENERATE_SCENE,
   textToTiptapDoc,
   type CanonFact,
+  type DependencyEdgeInput,
   type GenerateSceneResult,
   type Scene,
   type Work,
   type WritingContract,
 } from "@houchi/contracts";
-import { buildSceneWriterInput } from "@houchi/prompts";
-import type { TokenCallback } from "@houchi/providers";
+import {
+  criticSkill,
+  writerSkill,
+  type CriticOutput,
+  type WriterOutput,
+} from "@houchi/skills";
 import type { JobHandler } from "./index.js";
+import { runSkillStep } from "./skills.js";
 
 /** generate_scene がスクリプト側から取るコンテキスト。 */
 export interface SceneContextData {
@@ -23,15 +29,35 @@ export interface SceneContextData {
   prev_scenes: { id: string; title: string; excerpt: string }[];
 }
 
+function countSeverities(critique: CriticOutput): {
+  high: number;
+  medium: number;
+  low: number;
+  notes: number;
+} {
+  let high = 0;
+  let medium = 0;
+  let low = 0;
+  for (const v of critique.violations) {
+    if (v.severity === "high") high += 1;
+    else if (v.severity === "medium") medium += 1;
+    else low += 1;
+  }
+  return { high, medium, low, notes: critique.notes.length };
+}
+
 /**
- * generate_scene: Writing Contract 承認済みのシーン本文を生成する
- * (spec §4.4 ゲート, §6 Scene/SceneRevision)。
+ * generate_scene: Writing Contract 承認済みシーンの多段生成パイプライン
+ * (Phase 2a, spec §4.4 ゲート + §7.1 planner/writer/critic)。
  *
- * (a) contract.status === "approved" を検証 (ゲート)
- * → (b) 作品+正典+直前シーンを取り BYOキーで provider を stream 呼び出し
- * → (c) provider_result を checkpoint 永続化
- * → (d) 生成テキストを Tiptap doc JSON に変換し rev_no=最大+1 で保存、
- *   scenes.status=generated へ → (e) revision_id を checkpoint → complete。
+ * 段構成 (各段の出力は checkpoint に永続化、resume で再実行しない):
+ *   1. write    — writer スキルでドラフト生成 (checkpoint: draft)
+ *   2. critique — critic スキルで契約適合・禁止事項・正典矛盾を検査
+ *                 (checkpoint: critique)
+ *   3. revise   — severity=high の violation がある時だけ、writer に
+ *                 critique を渡して1回書き直し (checkpoint: final)
+ *   4. 確定     — scene_revisions 保存 → canon_facts_new 追加 →
+ *                 depends_on を dependency_edges に記録 → complete
  *
  * 再生成は同一シーンへの instruction 付き再投下で行い、rev_no が増える
  * (旧リビジョンは消えない)。
@@ -39,86 +65,158 @@ export interface SceneContextData {
 export const runGenerateScene: JobHandler = async (job, ctx) => {
   const payload = GenerateScenePayloadSchema.parse(job.payload);
   const checkpoint = payload.checkpoint ?? {};
-  const resumed = checkpoint.provider_result !== undefined;
-  let providerResult = checkpoint.provider_result;
+  const resumed =
+    checkpoint.draft !== undefined || checkpoint.revision_id !== undefined;
 
-  if (providerResult === undefined) {
-    if (!ctx.fetchSceneContext || !ctx.persistSceneRevision) {
-      throw new Error("generate_scene context fetch is not wired");
-    }
-    const sceneCtx = await ctx.fetchSceneContext(payload.scene_id);
+  if (!ctx.fetchSceneContext || !ctx.persistSceneRevision) {
+    throw new Error("generate_scene context fetch is not wired");
+  }
+  const sceneCtx = await ctx.fetchSceneContext(payload.scene_id);
 
-    // Writing Contract ゲート: 承認済みかつ payload の contract_id と一致する
-    // こと。未承認・別契約・契約なしはジョブ起因の失敗とする。
-    const contract = sceneCtx.contract;
-    if (!contract || contract.status !== "approved") {
-      throw new Error("writing contract is not approved");
-    }
-    if (contract.id !== payload.contract_id) {
-      throw new Error("writing contract does not match the approved proposal");
-    }
+  // Writing Contract ゲート: 承認済みかつ payload の contract_id と一致する
+  // こと。未承認・別契約・契約なしはジョブ起因の失敗とする。
+  const contract = sceneCtx.contract;
+  if (!contract || contract.status !== "approved") {
+    throw new Error("writing contract is not approved");
+  }
+  if (contract.id !== payload.contract_id) {
+    throw new Error("writing contract does not match the approved proposal");
+  }
 
-    const provider = ctx.getProvider(payload.provider);
-    const apiKey = provider.requiresKey
-      ? await ctx.resolveKey(payload.key_ref, job.id)
+  const canonStatements = sceneCtx.canon_facts.map((f) => f.statement);
+  const prevSummary =
+    sceneCtx.prev_scenes.length > 0
+      ? sceneCtx.prev_scenes
+          .map((s) => `- ${s.title}: ${s.excerpt}`)
+          .join("\n")
       : undefined;
 
-    const input = buildSceneWriterInput({
-      work: {
-        title: sceneCtx.work.title,
-        premise: sceneCtx.work.premise,
-        genre: sceneCtx.work.genre,
+  // --- 1. write: writer スキルでドラフト --------------------------------
+  let draft = checkpoint.draft as WriterOutput | undefined;
+  if (!draft) {
+    draft = await runSkillStep(ctx, {
+      job,
+      skill: writerSkill,
+      input: {
+        contract: contract.payload,
+        scene_title: sceneCtx.scene.title,
+        scene_purpose: sceneCtx.scene.purpose,
+        canon_facts: canonStatements,
+        ...(prevSummary !== undefined
+          ? { prev_scene_summary: prevSummary }
+          : {}),
+        ...(payload.instruction !== undefined
+          ? { instruction: payload.instruction }
+          : {}),
       },
-      charter: sceneCtx.work.charter,
-      policy: sceneCtx.work.policy,
-      canonFacts: sceneCtx.canon_facts.map((f) => f.statement),
-      contract: contract.payload,
-      sceneTitle: sceneCtx.scene.title,
-      scenePurpose: sceneCtx.scene.purpose,
-      prevScenes: sceneCtx.prev_scenes,
-      ...(payload.instruction ? { instruction: payload.instruction } : {}),
-    });
-
-    let progressChain: Promise<void> = Promise.resolve();
-    const onToken: TokenCallback = (text) => {
-      progressChain = progressChain.then(() =>
-        ctx.postProgress("token", { text }),
-      );
-    };
-
-    await ctx.postProgress("status", {
-      step: "call_provider",
       model: payload.model,
+      providerName: payload.provider,
+      keyRef: payload.key_ref,
+      step: "write",
     });
-    providerResult = await provider.generate(
-      { model: payload.model, input, stream: true },
-      apiKey ?? "",
-      onToken,
-    );
-    await progressChain;
-
-    await ctx.postProgress("status", { step: "persist_result" });
-    await ctx.saveCheckpoint({ provider_result: providerResult });
+    await ctx.saveCheckpoint({ draft });
   } else {
     await ctx.postProgress("status", { step: "resume_from_checkpoint" });
   }
 
+  // --- 2. critique: critic スキルで検査 ---------------------------------
+  let critique = checkpoint.critique as CriticOutput | undefined;
+  if (!critique) {
+    critique = await runSkillStep(ctx, {
+      job,
+      skill: criticSkill,
+      input: {
+        contract: contract.payload,
+        scene_title: sceneCtx.scene.title,
+        prose_md: draft.prose_md,
+        canon_facts: canonStatements,
+      },
+      model: payload.model,
+      providerName: payload.provider,
+      keyRef: payload.key_ref,
+      step: "critique",
+    });
+    await ctx.saveCheckpoint({ critique });
+  }
+
+  const summary = countSeverities(critique);
+
+  // --- 3. revise: high 指摘がある時だけ書き直し (1回) ---------------------
+  let final = checkpoint.final as WriterOutput | undefined;
+  let revised = false;
+  if (summary.high > 0 && !final) {
+    final = await runSkillStep(ctx, {
+      job,
+      skill: writerSkill,
+      input: {
+        contract: contract.payload,
+        scene_title: sceneCtx.scene.title,
+        scene_purpose: sceneCtx.scene.purpose,
+        canon_facts: canonStatements,
+        ...(prevSummary !== undefined
+          ? { prev_scene_summary: prevSummary }
+          : {}),
+        critique,
+        ...(payload.instruction !== undefined
+          ? { instruction: payload.instruction }
+          : {}),
+      },
+      model: payload.model,
+      providerName: payload.provider,
+      keyRef: payload.key_ref,
+      step: "revise",
+    });
+    await ctx.saveCheckpoint({ final });
+  }
+  const output = final ?? draft;
+  revised = final !== undefined;
+
+  // --- 4. 確定 ------------------------------------------------------------
   let revisionId = checkpoint.revision_id;
-  let revNo = 0;
+  let revNo = checkpoint.rev_no ?? 0;
   if (!revisionId) {
-    if (!ctx.persistSceneRevision) {
-      throw new Error("generate_scene persistence is not wired");
-    }
     await ctx.postProgress("status", { step: "persist_revision" });
     const revision = await ctx.persistSceneRevision({
       scene_id: payload.scene_id,
-      content_json: textToTiptapDoc(providerResult.output_text),
+      content_json: textToTiptapDoc(output.prose_md),
       source: "ai",
       job_id: job.id,
     });
     revisionId = revision.id;
     revNo = revision.rev_no;
     await ctx.saveCheckpoint({ revision_id: revisionId, rev_no: revNo });
+  }
+
+  // canon_facts_new の記録 (statement 重複は addCanonFacts 側でスキップ)
+  if (checkpoint.canon_recorded !== true) {
+    if (output.canon_facts_new.length > 0) {
+      if (!ctx.addCanonFacts) {
+        throw new Error("generate_scene canon persistence is not wired");
+      }
+      await ctx.postProgress("status", { step: "add_canon_facts" });
+      await ctx.addCanonFacts({
+        work_id: sceneCtx.work.id,
+        statements: output.canon_facts_new,
+        provenance: `generate_scene:${sceneCtx.scene.id}`,
+      });
+    }
+    await ctx.saveCheckpoint({ canon_recorded: true });
+  }
+
+  // depends_on の記録 (完全一致重複は repository 側でスキップ)
+  if (checkpoint.deps_recorded !== true) {
+    if (output.depends_on.length > 0) {
+      if (!ctx.recordDependencies) {
+        throw new Error("generate_scene dependency persistence is not wired");
+      }
+      await ctx.postProgress("status", { step: "record_dependencies" });
+      await ctx.recordDependencies({
+        scene_id: payload.scene_id,
+        work_id: sceneCtx.work.id,
+        edges: output.depends_on as DependencyEdgeInput[],
+      });
+    }
+    await ctx.saveCheckpoint({ deps_recorded: true });
   }
 
   await ctx.postProgress("status", { step: "complete" });
@@ -128,6 +226,8 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
     revision_id: revisionId,
     rev_no: revNo,
     resumed_from_checkpoint: resumed,
+    revised,
+    critique_summary: summary,
   };
   await ctx.complete(result);
 };

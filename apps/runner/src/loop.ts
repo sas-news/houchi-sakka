@@ -104,6 +104,22 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
       });
       return { added: res.added };
     },
+    recordDependencies: async (req) => {
+      const res = await api.recordSceneDependencies(req.scene_id, {
+        edges: req.edges,
+      });
+      return { added: res.added };
+    },
+    enqueueJob: async (req) => {
+      const res = await api.createJob({
+        kind: req.kind,
+        work_ref: req.work_ref,
+        user_ref: req.user_ref,
+        payload: req.payload,
+        idempotency_key: req.idempotency_key,
+      });
+      return res.job;
+    },
     fetchSceneContext: async (sceneId) => api.getSceneContext(sceneId),
     persistSceneRevision: async (req) => {
       const res = await api.persistSceneRevision(req.scene_id, {

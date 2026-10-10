@@ -22,6 +22,7 @@ import type {
   WorkDetail,
   WorkInfo,
   WorkProse,
+  WorkspaceFileInfo,
 } from "../lib/types";
 
 export const meta: MetaFunction = () => [{ title: "作品 | 放置作家" }];
@@ -73,6 +74,13 @@ const STEP_LABEL: Record<string, string> = {
   add_canon_facts: "正典メモを記録しています",
   create_proposal: "提案を作成しています",
   persist_revision: "本文を保存しています",
+  record_dependencies: "依存関係を記録しています",
+  enqueue_plan_work: "計画ジョブを起票しています",
+  // Phase 2a 多段パイプライン
+  write: "執筆中",
+  critique: "検査中",
+  revise: "改稿中",
+  plan: "計画を作成しています",
   complete: "完了処理をしています",
 };
 
@@ -137,7 +145,7 @@ function docToParagraphs(doc: unknown): string[] {
   return paras;
 }
 
-/** 提案カード (対話メッセージの下に表示)。 */
+/** 提案カード (対話メッセージの下に表示)。kind ごとに中身を切り替える。 */
 function ProposalCard({
   proposal,
   onDecide,
@@ -148,6 +156,109 @@ function ProposalCard({
   busy: boolean;
 }) {
   const p = proposal.payload;
+
+  // kind="plan": 計画提案 (episodes→scenes の一括作成案)
+  if (proposal.kind === "plan") {
+    const episodes = p.episodes ?? [];
+    const sceneCount = episodes.reduce((acc, e) => acc + e.scenes.length, 0);
+    return (
+      <div className={`proposal-card ${proposal.status}`}>
+        <div className="who">
+          作品計画の提案 ({PROPOSAL_STATUS_LABEL[proposal.status]})
+        </div>
+        <div className="proposal-body">
+          <strong>
+            話 {episodes.length}件・シーン {sceneCount}件
+          </strong>
+          <dl className="contract">
+            {episodes.map((ep, i) => (
+              <div key={i}>
+                <dt>{ep.title}</dt>
+                <dd>
+                  <ul>
+                    {ep.scenes.map((s, j) => (
+                      <li key={j}>
+                        {s.title}
+                        {s.purpose ? (
+                          <span className="muted"> — {s.purpose}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        {proposal.status === "pending" ? (
+          <div className="proposal-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDecide(proposal.id, "approve")}
+            >
+              承認して計画を作成
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => onDecide(proposal.id, "reject")}
+            >
+              却下する
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // kind="workspace_write": workspace への書き込み提案
+  if (proposal.kind === "workspace_write") {
+    return (
+      <div className={`proposal-card ${proposal.status}`}>
+        <div className="who">
+          資料への書き込み提案 ({PROPOSAL_STATUS_LABEL[proposal.status]})
+        </div>
+        <div className="proposal-body">
+          <strong>{p.path ?? "(不明なパス)"}</strong>
+          {p.supported === false ? (
+            <p className="muted">
+              このパスへの書き込みはまだ対応していません (記録のみ)。
+            </p>
+          ) : null}
+          {p.content ? (
+            <pre className="json-view">
+              {p.content.length > 600
+                ? `${p.content.slice(0, 600)}…`
+                : p.content}
+            </pre>
+          ) : null}
+        </div>
+        {proposal.status === "pending" ? (
+          <div className="proposal-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDecide(proposal.id, "approve")}
+            >
+              承認して書き込む
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => onDecide(proposal.id, "reject")}
+            >
+              却下する
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // kind="writing_contract" (既定): シーン生成の提案
   const c = p.contract ?? {};
   return (
     <div className={`proposal-card ${proposal.status}`}>
@@ -356,7 +467,7 @@ function ProseView({
   );
 }
 
-type Tab = "chat" | "prose" | "settings";
+type Tab = "chat" | "prose" | "materials" | "settings";
 
 export default function WorkPage({
   loaderData,
@@ -376,6 +487,11 @@ export default function WorkPage({
   // 設定タブのデータ
   const [keys, setKeys] = useState<KeyInfo[] | null>(null);
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
+  // 資料タブのデータ (workspace 仮想FS)
+  const [wsFiles, setWsFiles] = useState<WorkspaceFileInfo[] | null>(null);
+  const [wsPath, setWsPath] = useState<string | null>(null);
+  const [wsContent, setWsContent] = useState<string | null>(null);
+  const [wsError, setWsError] = useState<string | null>(null);
 
   const workId = loaderData.work.id;
 
@@ -412,7 +528,25 @@ export default function WorkPage({
         .then((r) => setKeys(r.keys))
         .catch(() => setKeys([]));
     }
-  }, [tab, refreshProse, keys]);
+    if (tab === "materials") {
+      api
+        .listWorkspaceFiles(workId)
+        .then((r) => setWsFiles(r.files))
+        .catch(() => setWsFiles([]));
+    }
+  }, [tab, refreshProse, keys, workId]);
+
+  const openWorkspaceFile = async (path: string) => {
+    setWsPath(path);
+    setWsError(null);
+    try {
+      const res = await api.getWorkspaceFile(workId, path);
+      setWsContent(res.content);
+    } catch (e) {
+      setWsContent(null);
+      setWsError(e instanceof ApiError ? e.message : "読み込みに失敗しました");
+    }
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -527,6 +661,7 @@ export default function WorkPage({
   const TABS: { key: Tab; label: string }[] = [
     { key: "chat", label: "対話" },
     { key: "prose", label: "本文" },
+    { key: "materials", label: "資料" },
     { key: "settings", label: "設定" },
   ];
 
@@ -689,6 +824,47 @@ export default function WorkPage({
                       <li key={f.id}>{f.statement}</li>
                     ))}
                   </ul>
+                </div>
+              ) : null}
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {tab === "materials" ? (
+        <section>
+          {wsError ? <p className="error-text">{wsError}</p> : null}
+          {!wsFiles ? (
+            <p className="muted">読み込み中…</p>
+          ) : wsFiles.length === 0 ? (
+            <p className="muted">まだ資料がありません。</p>
+          ) : (
+            <>
+              <p className="muted">
+                エージェントが見ている資料 (workspace) の一覧です。
+                ファイルを選ぶと中身を表示します (読み取り専用)。
+              </p>
+              <div className="scene-list">
+                {wsFiles.map((f) => (
+                  <button
+                    key={f.path}
+                    type="button"
+                    className={`scene-item${wsPath === f.path ? " active" : ""}`}
+                    onClick={() => void openWorkspaceFile(f.path)}
+                  >
+                    {f.path}{" "}
+                    <span className="muted">{f.summary}</span>
+                  </button>
+                ))}
+              </div>
+              {wsPath !== null ? (
+                <div className="card">
+                  <strong>{wsPath}</strong>
+                  {wsContent === null ? (
+                    <p className="muted">読み込み中…</p>
+                  ) : (
+                    <pre className="json-view">{wsContent}</pre>
+                  )}
                 </div>
               ) : null}
             </>

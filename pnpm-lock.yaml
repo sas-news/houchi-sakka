@@ -57,6 +57,9 @@ importers:
       '@houchi/secrets':
         specifier: workspace:*
         version: link:../../packages/secrets
+      '@houchi/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       better-auth:
         specifier: ^1.7.7
         version: 1.7.7(drizzle-kit@0.31.11)(drizzle-orm@0.44.7(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(kysely@0.29.6))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15))
@@ -165,6 +168,12 @@ importers:
       '@houchi/providers':
         specifier: workspace:*
         version: link:../providers
+      '@houchi/skills':
+        specifier: workspace:*
+        version: link:../skills
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -228,6 +237,50 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
+
+  packages/skills:
+    dependencies:
+      '@houchi/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
+
+  packages/workspace:
+    dependencies:
+      '@houchi/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@houchi/database':
+        specifier: workspace:*
+        version: link:../database
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      better-sqlite3:
+        specifier: ^12.2.0
+        version: 12.11.1
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

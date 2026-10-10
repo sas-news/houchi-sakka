@@ -34,13 +34,23 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 - 作者が本文を書きたい意思を示し、かつシーンの目的・視点・必須イベントなどの契約要素が対話で揃ったときだけ、PROPOSE 行で「話+シーン+Writing Contract」の提案を出す。契約要素が足りない場合は提案せず、不足分を質問して固める。
 - 提案は1返答につき1件まで。保留中の提案がある間は新しい提案を出さず、作者の承認/却下/修正指示を待つ。
 
+計画の起票 (RUN_PLAN):
+- 作者が作品の計画 (話・シーン構成) を作りたい意思を示したとき、<<RUN_PLAN>> 行で計画ジョブを起票する。計画自体はあなたが書くのではなく、専任のプランナーが作り、結果は提案カードとして作者に示される。
+- 計画の焦点や範囲の指示があれば JSON 引数で渡す (例: <<RUN_PLAN {"guidance": "序盤の導入だけ"}>>)。引数なしでもよい。
+- 保留中の計画提案がある間は再度 RUN_PLAN を出さない。
+
+資料 (workspace):
+- 作品のデータはファイルとして整理されている (一覧と要約は「現在の作品情報」に載る)。ファイルの中身はここには載らない。計画や契約を考える材料として、一覧にあるファイルの存在を踏まえて対話する。
+
 出力形式: 返答は日本語のプレーンテキスト。マーカー行は返答の末尾にだけ書く(各行1行ずつ、順不同・必要なものだけ):
 <<WORK_PATCH {"title": "…", "premise": "…", "genre": "…", "status": "active"}>>
 <<CANON_FACTS ["確定した設定や決定事項", "…"]>>
 <<PROPOSE {"episode_title": "第1話", "scene_title": "…", "scene_purpose": "…", "contract": {"role": "…", "pov": "…", "required_events": ["…"], "forbidden": ["…"], "knowledge_notes": "…", "connections": "…"}}>>
+<<RUN_PLAN {"guidance": "…"}>>
 - WORK_PATCH: 更新しないフィールドは省略。更新がなければ行自体を出さない。status には "setup" または "active" だけが使える。
 - CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。
-- PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。`;
+- PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。
+- RUN_PLAN: 引数は省略可。計画したいときだけ出す。`;
 
 /** WORK_PATCH 行のマーカー。返答最終行のみをパース対象にする。 */
 const WORK_PATCH_LINE = /^<<WORK_PATCH\s+(.+?)>>$/;
@@ -78,6 +88,8 @@ export function buildOrchestratorInput(input: {
   messages: ChatMessage[];
   canonFacts?: string[];
   pendingProposals?: string[];
+  /** workspace のファイル一覧 (一覧+要約のみ。中身は載せない)。 */
+  workspaceFiles?: { path: string; summary: string }[];
 }): ProviderInputMessage[] {
   const { work } = input;
   const lines = [
@@ -86,6 +98,12 @@ export function buildOrchestratorInput(input: {
     `ジャンル: ${work.genre || "(未設定)"}`,
     `状態: ${work.status}`,
   ];
+  if (input.workspaceFiles && input.workspaceFiles.length > 0) {
+    lines.push(
+      "資料 (workspace) のファイル一覧 — 中身は読まず一覧+要約のみ:",
+      ...input.workspaceFiles.map((f) => `- ${f.path} — ${f.summary}`),
+    );
+  }
   if (input.canonFacts && input.canonFacts.length > 0) {
     lines.push(
       "記録済みの正典メモ:",
@@ -121,6 +139,14 @@ export const PROPOSE_LINE = /^<<PROPOSE\s+(.+?)>>$/;
 /** 応答の末尾行の `<<CANON_FACTS [...]>>` マーカー。 */
 export const CANON_FACTS_LINE = /^<<CANON_FACTS\s+(.+?)>>$/;
 
+/** 応答の末尾行の `<<RUN_PLAN>>` / `<<RUN_PLAN {…}>>` マーカー。 */
+export const RUN_PLAN_LINE = /^<<RUN_PLAN(?:\s+(.+?))?>>$/;
+
+export type RunPlanMarker = {
+  /** 計画への指示 (焦点・範囲など)。 */
+  guidance?: string;
+};
+
 export type ProposeMarker = {
   episodeTitle?: string;
   sceneTitle: string;
@@ -140,12 +166,14 @@ export function parseOrchestratorMarkers(text: string): {
   patch: WorkPatchRequest | null;
   proposal: ProposeMarker | null;
   canonFacts: string[];
+  runPlan: RunPlanMarker | null;
 } {
   const lines = text.split("\n");
   let end = lines.length;
   const patches: WorkPatchRequest[] = [];
   const proposals: ProposeMarker[] = [];
   const factLists: string[][] = [];
+  let runPlan: RunPlanMarker | null = null;
 
   // 末尾の連続するマーカー行を後ろから読む
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -193,6 +221,26 @@ export function parseOrchestratorMarkers(text: string): {
         break;
       }
     }
+    const runPlanMatch = line.match(RUN_PLAN_LINE);
+    if (runPlanMatch) {
+      // JSON 引数は省略可。壊れた JSON はマーカーごと捨てる。
+      if (runPlanMatch[1] === undefined) {
+        runPlan = {};
+        end = i;
+        continue;
+      }
+      try {
+        const raw = z
+          .object({ guidance: z.string().optional() })
+          .passthrough()
+          .parse(JSON.parse(runPlanMatch[1]));
+        runPlan = raw.guidance !== undefined ? { guidance: raw.guidance } : {};
+        end = i;
+        continue;
+      } catch {
+        break;
+      }
+    }
     break;
   }
 
@@ -202,6 +250,7 @@ export function parseOrchestratorMarkers(text: string): {
     patch: patches.length > 0 ? patches[patches.length - 1]! : null,
     proposal: proposals.length > 0 ? proposals[proposals.length - 1]! : null,
     canonFacts: factLists.flat(),
+    runPlan,
   };
 }
 

@@ -6,10 +6,6 @@
     "lib": ["ES2022", "DOM"],
     "types": []
   },
-  "references": [
-    { "path": "../contracts" },
-    { "path": "../providers" },
-    { "path": "../skills" }
-  ],
+  "references": [{ "path": "../contracts" }, { "path": "../database" }],
   "include": ["src"]
 }
