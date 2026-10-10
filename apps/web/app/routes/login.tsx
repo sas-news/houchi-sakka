@@ -69,12 +69,17 @@ export default function Login({
   }, []);
 
   return (
-    <main className="page">
-      <h1>放置作家</h1>
-      <div className="card">
-        <p>
-          AI執筆前提の創作環境。オーケストレーターと対話して作品を作ります。
+    <main className="page page--narrow">
+      <div className="login-hero">
+        <span className="brand-mark" aria-hidden="true" />
+        <h1>放置作家</h1>
+        <p className="tagline">
+          AI執筆前提の創作環境。
+          <br />
+          オーケストレーターと対話して作品を作ります。
         </p>
+      </div>
+      <div className="card login-card">
         {error ? <p className="error-text">{error}</p> : null}
         <div className="form-actions">
           {loaderData.providers.google ? (

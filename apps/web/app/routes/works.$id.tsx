@@ -40,10 +40,28 @@ const SCENE_STATUS_LABEL: Record<SceneInfo["status"], string> = {
   generated: "生成済み",
 };
 
+const SCENE_STATUS_BADGE: Record<SceneInfo["status"], string> = {
+  draft: "badge",
+  proposed: "badge badge--warn",
+  approved: "badge badge--accent",
+  generated: "badge badge--ok",
+};
+
 const PROPOSAL_STATUS_LABEL: Record<ProposalInfo["status"], string> = {
   pending: "決定待ち",
   approved: "承認済み",
   rejected: "却下済み",
+};
+
+const PROPOSAL_STATUS_BADGE: Record<ProposalInfo["status"], string> = {
+  pending: "badge badge--warn",
+  approved: "badge badge--ok",
+  rejected: "badge",
+};
+
+const WORK_STATUS_BADGE: Record<WorkInfo["status"], string> = {
+  setup: "badge badge--warn",
+  active: "badge badge--ok",
 };
 
 const STEP_LABEL: Record<string, string> = {
@@ -133,7 +151,12 @@ function ProposalCard({
   const c = p.contract ?? {};
   return (
     <div className={`proposal-card ${proposal.status}`}>
-      <div className="who">シーン生成の提案 ({PROPOSAL_STATUS_LABEL[proposal.status]})</div>
+      <div className="proposal-head">
+        <span className="who">シーン生成の提案</span>
+        <span className={PROPOSAL_STATUS_BADGE[proposal.status]}>
+          {PROPOSAL_STATUS_LABEL[proposal.status]}
+        </span>
+      </div>
       <div className="proposal-body">
         <strong>
           {p.episode_title ? `${p.episode_title} / ` : ""}
@@ -240,7 +263,9 @@ function ProseView({
     <div>
       <h2>
         {scene.title}{" "}
-        <span className="muted">({SCENE_STATUS_LABEL[scene.status]})</span>
+        <span className={SCENE_STATUS_BADGE[scene.status]}>
+          {SCENE_STATUS_LABEL[scene.status]}
+        </span>
       </h2>
       {scene.purpose ? <p className="muted">目的: {scene.purpose}</p> : null}
       {sorted.length === 0 ? (
@@ -506,7 +531,7 @@ export default function WorkPage({
   ];
 
   return (
-    <main className="page">
+    <main className="page page--wide">
       <nav className="topnav">
         <Link to="/" className="brand">
           放置作家
@@ -556,17 +581,20 @@ export default function WorkPage({
               ))}
               {running ? (
                 <div className="job-status">
-                  {step ?? "実行中です"}
-                  {detail.queued_jobs > 0
-                    ? ` (キュー待ち ${detail.queued_jobs} 件)`
-                    : ""}
+                  <span className="spinner" aria-hidden="true" />
+                  <span className="step">
+                    {step ?? "実行中です"}
+                    {detail.queued_jobs > 0
+                      ? ` (キュー待ち ${detail.queued_jobs} 件)`
+                      : ""}
+                  </span>
                   {stream ? <span className="stream">{stream}</span> : null}
                 </div>
               ) : null}
               <div ref={bottomRef} />
             </div>
             {error ? <p className="error-text">{error}</p> : null}
-            <form onSubmit={(e) => void submit(e)}>
+            <form className="chat-form" onSubmit={(e) => void submit(e)}>
               <label htmlFor="content">オーケストレーターへのメッセージ</label>
               <textarea
                 id="content"
@@ -584,13 +612,17 @@ export default function WorkPage({
           <aside className="card work-meta">
             <dl>
               <dt>状態</dt>
-              <dd>{STATUS_LABEL[work.status]}</dd>
+              <dd>
+                <span className={WORK_STATUS_BADGE[work.status]}>
+                  {STATUS_LABEL[work.status]}
+                </span>
+              </dd>
               <dt>ジャンル</dt>
               <dd>{work.genre || "未設定"}</dd>
               <dt>前提</dt>
               <dd>{work.premise || "未設定"}</dd>
             </dl>
-            <p className="muted">
+            <p className="side-note">
               作品情報はオーケストレーターとの対話で更新されます。
             </p>
           </aside>
@@ -601,18 +633,21 @@ export default function WorkPage({
         <section>
           {proseError ? <p className="error-text">{proseError}</p> : null}
           {!prose ? (
-            <p className="muted">読み込み中…</p>
+            <div className="loading">
+              <span className="spinner" aria-hidden="true" />
+              読み込み中…
+            </div>
           ) : prose.scenes.length === 0 ? (
-            <p className="muted">
+            <div className="empty">
               まだシーンがありません。対話タブでオーケストレーターに提案を
               出してもらい、承認すると本文が生成されます。
-            </p>
+            </div>
           ) : (
             <>
               <div className="scene-list">
                 {prose.episodes.map((ep) => (
                   <div key={ep.id} className="card">
-                    <strong>
+                    <strong className="episode-title">
                       第{ep.ord}話 {ep.title}
                     </strong>
                     {prose.scenes
@@ -627,8 +662,8 @@ export default function WorkPage({
                           onClick={() => setSceneId(s.id)}
                         >
                           {s.title}{" "}
-                          <span className="muted">
-                            ({SCENE_STATUS_LABEL[s.status]})
+                          <span className="scene-status">
+                            {SCENE_STATUS_LABEL[s.status]}
                           </span>
                         </button>
                       ))}
@@ -644,10 +679,10 @@ export default function WorkPage({
                   busy={sending}
                 />
               ) : (
-                <p className="muted">シーンを選ぶと本文が表示されます。</p>
+                <div className="empty">シーンを選ぶと本文が表示されます。</div>
               )}
               {prose.canon_facts.length > 0 ? (
-                <div className="card">
+                <div className="card canon-card">
                   <strong>正典メモ</strong>
                   <ul>
                     {prose.canon_facts.map((f) => (
