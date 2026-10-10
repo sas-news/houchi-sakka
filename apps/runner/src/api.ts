@@ -1,20 +1,27 @@
 import type {
+  AddCanonFactsRequest,
   AppendMessageRequest,
   AppendMessageResponse,
+  CanonFactsResponse,
   CompleteRequest,
   CreateJobRequest,
   CreateJobResponse,
   CreateKeyRequest,
   CreateKeyResponse,
+  CreateProposalRequest,
   FailRequest,
   HeartbeatRequest,
   JobResponse,
   LeaseRequest,
   LeaseResponse,
+  PersistRevisionRequest,
   ProgressRequest,
   ProgressResponse,
+  ProposalResponse,
   ResolveKeyRequest,
   ResolveKeyResponse,
+  SceneContextResponse,
+  SceneRevisionResponse,
   ThreadContextResponse,
   WorkPatchRequest,
 } from "@houchi/contracts";
@@ -103,6 +110,28 @@ export class ApiClient {
   }
   patchWork(id: string, req: WorkPatchRequest): Promise<unknown> {
     return this.call("POST", `/api/internal/works/${id}/patch`, req);
+  }
+  createProposal(req: CreateProposalRequest): Promise<ProposalResponse> {
+    return this.call("POST", "/api/internal/proposals", req);
+  }
+  addCanonFacts(
+    workId: string,
+    req: AddCanonFactsRequest,
+  ): Promise<CanonFactsResponse> {
+    return this.call("POST", `/api/internal/works/${workId}/canon-facts`, req);
+  }
+  getSceneContext(id: string): Promise<SceneContextResponse> {
+    return this.call("GET", `/api/internal/scenes/${id}/context`);
+  }
+  persistSceneRevision(
+    sceneId: string,
+    req: PersistRevisionRequest,
+  ): Promise<SceneRevisionResponse> {
+    return this.call(
+      "POST",
+      `/api/internal/scenes/${sceneId}/revisions`,
+      req,
+    );
   }
   createKey(req: CreateKeyRequest): Promise<CreateKeyResponse> {
     return this.call("POST", "/api/internal/keys", req);

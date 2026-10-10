@@ -1,18 +1,23 @@
 import {
+  JOB_KIND_GENERATE_SCENE,
   JOB_KIND_ORCHESTRATOR_TURN,
   JOB_KIND_SMOKE_GENERATE,
   SmokeGeneratePayloadSchema,
   type AgentJob,
+  type CanonFact,
   type ChatMessage,
   type ChatRole,
   type ChatThread,
   type ProgressEventType,
+  type Proposal,
+  type SceneRevision,
   type SmokeGenerateResult,
   type Work,
   type WorkPatchRequest,
 } from "@houchi/contracts";
 import type { Provider, TokenCallback } from "@houchi/providers";
 import { runOrchestratorTurn } from "./orchestrator.js";
+import { runGenerateScene, type SceneContextData } from "./scene.js";
 
 /**
  * packages/harness — ジョブ種別ごとの永続ステートマシン (spec §8.1 Harness)。
@@ -41,6 +46,10 @@ export interface OrchestratorContextData {
   work: Work;
   thread: ChatThread;
   messages: ChatMessage[];
+  /** 記録済みの正典メモ (再提案の抑止と契約材料に使う)。 */
+  canon_facts: CanonFact[];
+  /** 作品の提案一覧 (pending 判定はこちら側で行う)。 */
+  proposals: Proposal[];
 }
 
 /**
@@ -80,6 +89,29 @@ export interface JobContext {
   }): Promise<ChatMessage>;
   /** orchestrator_turn: WORK_PATCH を作品へ適用する。 */
   applyWorkPatch?(workId: string, patch: WorkPatchRequest): Promise<void>;
+  /** orchestrator_turn: 提案を作成する (episode/scene/contract を含め作成)。 */
+  createProposal?(input: {
+    work_id: string;
+    thread_id: string;
+    message_id: string;
+    kind: string;
+    payload: Record<string, unknown>;
+  }): Promise<Proposal>;
+  /** orchestrator_turn: 正典メモを追加する (statement 重複はスキップ)。 */
+  addCanonFacts?(input: {
+    work_id: string;
+    statements: string[];
+    provenance: string;
+  }): Promise<{ added: number }>;
+  /** generate_scene: シーン+契約+作品+正典+直近シーンを取得する。 */
+  fetchSceneContext?(sceneId: string): Promise<SceneContextData>;
+  /** generate_scene: リビジョンを保存しシーンを generated にする。 */
+  persistSceneRevision?(input: {
+    scene_id: string;
+    content_json: unknown;
+    source: "ai" | "manual_edit";
+    job_id: string | null;
+  }): Promise<SceneRevision>;
 }
 
 export type JobHandler = (job: AgentJob, ctx: JobContext) => Promise<void>;
@@ -151,6 +183,7 @@ export function createDefaultHandlers(): JobHandlers {
   return {
     [JOB_KIND_SMOKE_GENERATE]: runSmokeGenerate,
     [JOB_KIND_ORCHESTRATOR_TURN]: runOrchestratorTurn,
+    [JOB_KIND_GENERATE_SCENE]: runGenerateScene,
   };
 }
 

@@ -213,3 +213,115 @@ describe("repo", () => {
     expect((await getKeyById(db, k.id))?.ciphertext).toBe("iv.ct");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 1b: 話・シーン・契約・正典・提案
+// ---------------------------------------------------------------------------
+
+import {
+  addCanonFacts,
+  createEpisode,
+  createProposal,
+  createScene,
+  createSceneRevision,
+  createWritingContract,
+  getLatestContractByScene,
+  getLatestEpisode,
+  getProposalById,
+  listCanonFactsByWork,
+  listRevisionsByScene,
+  listScenesByWork,
+  updateSceneStatus,
+} from "../src/index.js";
+
+describe("Phase 1b エンティティ", () => {
+  it("episode 自動作成 → シーン → 契約の順で作れる", async () => {
+    const db = createTestDb();
+    const ep = await createEpisode(db, { workId: "w1", title: "第1話" });
+    expect(ep.ord).toBe(1);
+    const scene = await createScene(db, {
+      episodeId: ep.id,
+      title: "冒頭",
+      purpose: "導入",
+      status: "proposed",
+    });
+    expect(scene.ord).toBe(1);
+    const contract = await createWritingContract(db, {
+      sceneId: scene.id,
+      status: "draft",
+      payload: { role: "導入", pov: "三人称" },
+    });
+    expect(contract.status).toBe("draft");
+    expect(await getLatestEpisode(db, "w1")).toMatchObject({ title: "第1話" });
+    expect(await getLatestContractByScene(db, scene.id)).toMatchObject({
+      id: contract.id,
+    });
+    const scenes = await listScenesByWork(db, "w1");
+    expect(scenes.map((s) => s.title)).toEqual(["冒頭"]);
+    const updated = await updateSceneStatus(db, {
+      id: scene.id,
+      status: "approved",
+    });
+    expect(updated!.status).toBe("approved");
+  });
+
+  it("scene_revisions は rev_no が最大+1で増える", async () => {
+    const db = createTestDb();
+    const ep = await createEpisode(db, { workId: "w1", title: "第1話" });
+    const scene = await createScene(db, {
+      episodeId: ep.id,
+      title: "冒頭",
+      purpose: "",
+      status: "approved",
+    });
+    const r1 = await createSceneRevision(db, {
+      sceneId: scene.id,
+      contentJson: { type: "doc", content: [] },
+      source: "ai",
+      jobId: "j1",
+    });
+    const r2 = await createSceneRevision(db, {
+      sceneId: scene.id,
+      contentJson: { type: "doc", content: [] },
+      source: "manual_edit",
+    });
+    expect(r1.rev_no).toBe(1);
+    expect(r2.rev_no).toBe(2);
+    const revs = await listRevisionsByScene(db, scene.id);
+    expect(revs.map((r) => r.rev_no)).toEqual([1, 2]);
+  });
+
+  it("canon_facts は statement 完全一致を重複スキップする", async () => {
+    const db = createTestDb();
+    const first = await addCanonFacts(db, {
+      workId: "w1",
+      statements: ["主人公は少女", "汽車は止まっている"],
+      provenance: "orchestrator",
+    });
+    expect(first.added).toBe(2);
+    const second = await addCanonFacts(db, {
+      workId: "w1",
+      statements: ["主人公は少女", "雨がやんだ"],
+      provenance: "orchestrator",
+    });
+    expect(second.added).toBe(1);
+    const facts = await listCanonFactsByWork(db, "w1");
+    expect(facts).toHaveLength(3);
+  });
+
+  it("proposal は message_id+kind で冪等", async () => {
+    const db = createTestDb();
+    const input = {
+      workId: "w1",
+      threadId: "t1",
+      messageId: "m1",
+      kind: "writing_contract",
+      payload: { scene_title: "冒頭" },
+    };
+    const a = await createProposal(db, input);
+    const b = await createProposal(db, input);
+    expect(b.id).toBe(a.id);
+    const got = await getProposalById(db, a.id);
+    expect(got!.status).toBe("pending");
+  });
+});

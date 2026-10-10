@@ -50,6 +50,11 @@ describe("buildOrchestratorInput", () => {
     premise: "前提",
     genre: "",
     status: "setup" as const,
+    charter: null,
+    policy: null,
+    provider: null,
+    model: null,
+    key_ref: null,
     created_at: 0,
     updated_at: 0,
   };

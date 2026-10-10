@@ -73,6 +73,12 @@ pnpm -r test
 | GET | `/api/internal/threads/:id/context` | orchestrator の入力 (work + thread + messages) |
 | POST | `/api/internal/threads/:id/messages` | assistant メッセージ永続化 (`job_id` ユニークで冪等) |
 | POST | `/api/internal/works/:id/patch` | WORK_PATCH の適用 |
+| POST | `/api/internal/proposals` | PROPOSE の実体化 (episode/scene/contract/proposal 一括作成) |
+| POST | `/api/internal/works/:id/canon-facts` | CANON_FACTS の蓄積 |
+| GET | `/api/internal/scenes/:id/context` | generate_scene の入力 (シーン+契約+作品+正典+直前シーン抜粋) |
+| POST | `/api/internal/scenes/:id/revisions` | 生成リビジョンの確定 (scene→generated) |
+
+ユーザー向け (Phase 1b): `POST /api/proposals/:id/approve|reject` (承認カードの決定。approve は generate_scene を投下)、`GET /api/works/:id/prose` (本文タブ用)、`POST /api/scenes/:id/rewrite` (書き直し=新リビジョン)、`POST /api/scenes/:id/revisions` (手編集保存)、`PATCH /api/works/:id/settings` (キー/モデル設定)。
 
 同一 `work_ref` を持つジョブは有効なリースが残っている間は別実行体にリースされない (直列化)。
 
@@ -80,7 +86,19 @@ pnpm -r test
 
 `POST /api/works/:id/messages` → ユーザー発言を保存し `orchestrator_turn` ジョブをキュー → runner がリースして `fetchOrchestratorContext` (スレッド履歴+作品情報) を取得 → `packages/prompts` の日本語システムプロンプトで生成 → assistant メッセージを永続化して complete。UI は `GET /api/works/:id` を 1.5 秒ごとにポーリングし、進捗とストリーム中のテキストを表示する。
 
-返答末尾の `<<WORK_PATCH {...}>>` 行があれば作品属性 (title/premise/genre/status) を更新する。パース失敗は無視し、本文にも残さない。最初のユーザー発言で作品は `setup` → `active` に遷移する。
+返答末尾のマーカー行をパースして適用する (いずれも末尾の連続マーカー行のみ有効、パース失敗は無視):
+- `<<WORK_PATCH {...}>>` — 作品属性 (title/premise/genre/status/charter/policy) を更新
+- `<<CANON_FACTS ["文", ...]>>` — 正典メモ (canon_facts) に追記。statement 完全一致は重複スキップ
+- `<<PROPOSE {...}>>` — 「話+シーン+Writing Contract」の提案を作成し、チャットに承認カードを表示する (proposal + episode/scene/contract をサーバー側で一括作成)
+
+最初のユーザー発言で作品は `setup` → `active` に遷移する。
+
+## Phase 1b: 提案 → 承認 → 本文生成
+
+- **提案カード**: `<<PROPOSE>>` で作られた提案は assistant メッセージの下に承認カードとして出る。「承認して本文を生成」→ 契約とシーンが approved になり `generate_scene` ジョブが投下される。「却下する」→ rejected にして対話で修正を続けられる。
+- **generate_scene**: Writing Contract の `status === "approved"` をゲート検証 → 作品+正典メモ+直前シーン抜粋を入力に provider へ stream 生成 → 段落分割で Tiptap doc JSON に変換 → `scene_revisions` に `rev_no=最大+1` で保存 → `scenes.status=generated`。
+- **本文タブ**: 話→シーンの一覧、リビジョン切替 (第N稿)、「書き直しを依頼」(指示付きで generate_scene 再投下=新リビジョン)、「手編集」(textarea → manual_edit リビジョン)。
+- **設定タブ**: 創作憲章/作風ポリシーの表示、作品の provider/model/キー選択 (自分のキーのみ)。作品作成時点ではユーザーの最新キーが初期値。
 
 ## ローカル一気通貫 (ブラウザ + stub runner、実 OpenAI キー不要)
 
@@ -105,22 +123,29 @@ pnpm -r test
    ```bash
    cd apps/web
    pnpm exec wrangler d1 migrations apply houchi-sakka --local
-   pnpm dev   # http://localhost:8787 (vite dev)
+   pnpm dev   # http://localhost:5173 (vite dev)
    ```
 
 4. 別ターミナルで runner を stub モードで起動
 
    ```bash
    cd apps/runner
-   WEB_BASE_URL=http://localhost:8787 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
+   WEB_BASE_URL=http://localhost:5173 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
      pnpm start
+
+   # Phase 1b シナリオ (対話→提案→承認→本文生成) を stub で回す場合:
+   #   STUB_SCENARIO=phase1b を足す
+   WEB_BASE_URL=http://localhost:5173 EXECUTOR_TOKEN=dev-token RUNNER_PROVIDER=stub \
+     STUB_SCENARIO=phase1b pnpm start
    ```
 
-5. ブラウザで http://localhost:8787 を開く
+5. ブラウザで http://localhost:5173 を開く
 
    「開発用ログイン」→ APIキー設定でキー登録 (provider: OpenAI、値は `sk-dummy` 等でよい — stub runner は使わない) → 「新しい作品を作る」→ 対話画面で送信 → 数秒で stub の返答が流れる。
 
    ※ runner に `RUNNER_PROVIDER=stub` を指定すると、登録キーの provider が `openai` でも stub が呼ばれる (キー自体は resolve 経路で owner 一致を検証されて渡る)。
+
+   **STUB_SCENARIO=phase1b での確認手順**: 対話1往復目 → WORK_PATCH+CANON_FACTS で前提と正典を確定。2往復目に「書いて」等の発言 → PROPOSE 提案カードが出る。「承認して本文を生成」→ stub の段落本文がストリームされ、「本文」タブで読める。「書き直しを依頼」で第2稿、「手編集」で manual_edit リビジョンを試せる。
 
 ## チェックポイント / 再開の仕組み
 

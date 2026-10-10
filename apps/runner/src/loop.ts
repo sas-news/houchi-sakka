@@ -93,6 +93,26 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
     applyWorkPatch: async (workId, patch) => {
       await api.patchWork(workId, patch);
     },
+    createProposal: async (req) => {
+      const res = await api.createProposal(req);
+      return res.proposal;
+    },
+    addCanonFacts: async (req) => {
+      const res = await api.addCanonFacts(req.work_id, {
+        statements: req.statements,
+        provenance: req.provenance,
+      });
+      return { added: res.added };
+    },
+    fetchSceneContext: async (sceneId) => api.getSceneContext(sceneId),
+    persistSceneRevision: async (req) => {
+      const res = await api.persistSceneRevision(req.scene_id, {
+        content_json: req.content_json,
+        source: req.source,
+        job_id: req.job_id,
+      });
+      return res.revision;
+    },
     getProvider: (name) => {
       const provider = deps.providers[name ?? "openai"];
       if (!provider) throw new Error(`unknown provider: ${name}`);

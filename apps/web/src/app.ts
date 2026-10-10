@@ -1,45 +1,78 @@
 import {
+  AddCanonFactsRequestSchema,
   AppendMessageRequestSchema,
+  ApproveProposalResponseSchema,
   CompleteRequestSchema,
   CreateJobRequestSchema,
   CreateKeyRequestSchema,
   CreateMessageRequestSchema,
   CreateUserKeyRequestSchema,
   CreateWorkRequestSchema,
+  CreateProposalRequestSchema,
+  CreateRevisionRequestSchema,
   FailRequestSchema,
   HeartbeatRequestSchema,
+  JOB_KIND_GENERATE_SCENE,
   JOB_KIND_ORCHESTRATOR_TURN,
   LeaseRequestSchema,
+  PersistRevisionRequestSchema,
   ProgressRequestSchema,
   ResolveKeyRequestSchema,
+  RewriteSceneRequestSchema,
+  tiptapDocToText,
   WorkPatchRequestSchema,
+  WorkSettingsRequestSchema,
   type AgentJob,
   type ApiErrorCode,
 } from "@houchi/contracts";
 import {
+  addCanonFacts,
   appendMessage,
   appendProgress,
   completeJob,
+  createEpisode,
   createJob,
   createKey,
+  createProposal,
+  createScene,
+  createSceneRevision,
   createWork,
+  createWritingContract,
   deleteKey,
   failJob,
+  findEpisodeByTitle,
+  getContractById,
+  getEpisodeById,
   getJob,
   getKeyById,
+  getLatestContractByScene,
+  getLatestEpisode,
+  getProposalById,
+  getSceneById,
   getThreadById,
   getThreadByWorkId,
   getUserIdByEmail,
   getWorkById,
   heartbeat,
   leaseNextJob,
+  listCanonFactsByWork,
+  listContractsByWork,
+  listEpisodesByWork,
   listKeysByOwner,
   listMessages,
   listOpenJobsByWork,
   listProgress,
+  listProposalsByWork,
+  listRevisionsByScene,
+  listRevisionsByWork,
+  listScenesByWork,
   listWorksByOwner,
   patchWork,
   RepoError,
+  updateContractStatus,
+  updateProposalStatus,
+  updateSceneStatus,
+  updateWorkConfig,
   type DbLike,
 } from "@houchi/database";
 import { decrypt, encrypt, secretsEqual } from "@houchi/secrets";
@@ -138,6 +171,47 @@ export function createApp(deps: WebDeps): FetchHandler {
   };
 
   /**
+   * generate_scene ジョブをキューする。キーは作品設定 → ユーザーの最新キー
+   * の順で引く (キー未登録なら null を返す)。
+   */
+  const enqueueGenerateScene = async (input: {
+    work: { id: string; owner_ref: string; key_ref: string | null; model: string | null };
+    sceneId: string;
+    contractId: string;
+    instruction?: string;
+    idempotencyKey: string;
+  }) => {
+    const keys = await listKeysByOwner(db, input.work.owner_ref);
+    const workKey = input.work.key_ref
+      ? await getKeyById(db, input.work.key_ref)
+      : undefined;
+    const key =
+      workKey && workKey.owner_ref === input.work.owner_ref
+        ? workKey
+        : keys.at(-1);
+    if (!key) return null;
+    const { job } = await createJob(db, {
+      kind: JOB_KIND_GENERATE_SCENE,
+      workRef: input.work.id,
+      userRef: input.work.owner_ref,
+      payload: {
+        scene_id: input.sceneId,
+        contract_id: input.contractId,
+        work_id: input.work.id,
+        user_ref: input.work.owner_ref,
+        key_ref: key.id,
+        provider: key.provider,
+        model: input.work.model ?? deps.defaultModel,
+        ...(input.instruction !== undefined
+          ? { instruction: input.instruction }
+          : {}),
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+    return job;
+  };
+
+  /**
    * dev-login: 固定開発ユーザーでセッションを発行する。
    * better-auth の emailAndPassword 経路 (DEV_LOGIN_ENABLED 時のみ有効化) に
    * 内部転送し、返ってきた Set-Cookie をそのまま利用者に渡す。
@@ -205,7 +279,9 @@ export function createApp(deps: WebDeps): FetchHandler {
         pathname === "/api/works" ||
         pathname.startsWith("/api/works/") ||
         pathname === "/api/keys" ||
-        pathname.startsWith("/api/keys/");
+        pathname.startsWith("/api/keys/") ||
+        pathname.startsWith("/api/proposals/") ||
+        pathname.startsWith("/api/scenes/");
       if (userScoped) {
         const user = await sessionUser(request);
         if (!user) return err(401, "unauthorized", "ログインが必要です");
@@ -231,10 +307,18 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "POST" && pathname === "/api/works") {
           const body = await parseBody(request, CreateWorkRequestSchema);
           if (body instanceof Response) return body;
+          // 既定のキーがあれば作品の provider/key_ref として初期化する
+          // (設定タブで後から変更可)。
+          const keys = await listKeysByOwner(db, user.id);
+          const defaultKey = keys.at(-1);
           const { work, thread } = await createWork(db, {
             ownerRef: user.id,
             title: body.title,
             ...(body.premise !== undefined ? { premise: body.premise } : {}),
+            model: deps.defaultModel,
+            ...(defaultKey
+              ? { provider: defaultKey.provider, keyRef: defaultKey.id }
+              : {}),
           });
           // 対話開始の入口として、オーケストレーターの案内文を最初に置く
           // (LLM は呼ばない固定文。spec §4.1: 作品は対話から開始する)。
@@ -263,11 +347,13 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (!thread) return err(500, "internal", "thread missing");
           const messages = await listMessages(db, thread.id);
           const openJobs = await listOpenJobsByWork(db, work.id);
+          const proposals = await listProposalsByWork(db, work.id);
           const active = openJobs[0] ?? null;
           return json({
             work,
             thread,
             messages,
+            proposals,
             active_job: active
               ? {
                   job: publicJob(active),
@@ -367,6 +453,222 @@ export function createApp(deps: WebDeps): FetchHandler {
           });
           if (!deleted) return err(404, "not_found", "not found");
           return json({ ok: true });
+        }
+
+        // GET /api/works/:id/prose — 本文タブ用の話/シーン/リビジョン/契約/正典
+        const workProse = pathname.match(/^\/api\/works\/([^/]+)\/prose$/);
+        if (method === "GET" && workProse) {
+          const work = await getWorkById(db, workProse[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const episodes = await listEpisodesByWork(db, work.id);
+          const scenes = await listScenesByWork(db, work.id);
+          const revisions = await listRevisionsByWork(db, work.id);
+          const contracts = await listContractsByWork(db, work.id);
+          const canonFacts = await listCanonFactsByWork(db, work.id);
+          return json({
+            episodes,
+            scenes,
+            revisions,
+            contracts,
+            canon_facts: canonFacts,
+          });
+        }
+
+        // PATCH /api/works/:id/settings — provider/model/key の選択
+        const workSettings = pathname.match(
+          /^\/api\/works\/([^/]+)\/settings$/,
+        );
+        if (method === "PATCH" && workSettings) {
+          const body = await parseBody(request, WorkSettingsRequestSchema);
+          if (body instanceof Response) return body;
+          const work = await getWorkById(db, workSettings[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          let keyRef: string | null | undefined;
+          let provider: string | null | undefined;
+          if (body.key_id !== undefined) {
+            if (body.key_id === null) {
+              keyRef = null;
+              provider = null;
+            } else {
+              const key = await getKeyById(db, body.key_id);
+              if (!key || key.owner_ref !== user.id) {
+                return err(400, "bad_request", "指定したキーが見つかりません");
+              }
+              keyRef = key.id;
+              provider = key.provider;
+            }
+          }
+          const updated = await updateWorkConfig(db, {
+            id: work.id,
+            ...(keyRef !== undefined ? { keyRef } : {}),
+            ...(provider !== undefined ? { provider } : {}),
+            ...(body.model !== undefined ? { model: body.model } : {}),
+          });
+          return json({ work: updated });
+        }
+
+        // POST /api/proposals/:id/(approve|reject) — 提案カードの決定
+        const proposalAction = pathname.match(
+          /^\/api\/proposals\/([^/]+)\/(approve|reject)$/,
+        );
+        if (method === "POST" && proposalAction) {
+          const [, proposalId, action] = proposalAction as unknown as [
+            string,
+            string,
+            string,
+          ];
+          const proposal = await getProposalById(db, proposalId);
+          if (!proposal) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, proposal.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          if (proposal.status !== "pending") {
+            return err(400, "bad_request", "この提案はすでに決定済みです");
+          }
+          const p = proposal.payload as {
+            episode_id?: string;
+            scene_id?: string;
+            contract_id?: string;
+          };
+          if (!p.scene_id || !p.contract_id || !p.episode_id) {
+            return err(500, "internal", "proposal payload is incomplete");
+          }
+
+          if (action === "reject") {
+            await updateContractStatus(db, {
+              id: p.contract_id,
+              status: "rejected",
+            });
+            await updateSceneStatus(db, { id: p.scene_id, status: "draft" });
+            const updated = await updateProposalStatus(db, {
+              id: proposal.id,
+              status: "rejected",
+            });
+            await appendMessage(db, {
+              threadId: proposal.thread_id,
+              role: "assistant",
+              content:
+                "提案を却下しました。どこを直しますか? " +
+                "シーンの内容や契約の条件を対話で修正して、もう一度提案できます。",
+            });
+            return json({ proposal: updated });
+          }
+
+          // approve: 契約・シーンを approved にし generate_scene を投下
+          await updateContractStatus(db, {
+            id: p.contract_id,
+            status: "approved",
+          });
+          await updateSceneStatus(db, { id: p.scene_id, status: "approved" });
+          const updatedProposal = await updateProposalStatus(db, {
+            id: proposal.id,
+            status: "approved",
+          });
+          const job = await enqueueGenerateScene({
+            work,
+            sceneId: p.scene_id,
+            contractId: p.contract_id,
+            idempotencyKey: `generate_scene:${p.scene_id}:${p.contract_id}`,
+          });
+          if (!job) {
+            return err(
+              400,
+              "bad_request",
+              "プロバイダーのAPIキーが未登録です。キー設定から登録してください",
+            );
+          }
+          const [episode, scene, contract] = await Promise.all([
+            getEpisodeById(db, p.episode_id),
+            getSceneById(db, p.scene_id),
+            getContractById(db, p.contract_id),
+          ]);
+          const body = ApproveProposalResponseSchema.parse({
+            proposal: updatedProposal,
+            episode,
+            scene,
+            contract,
+            job: publicJob(job),
+          });
+          return json(body);
+        }
+
+        // POST /api/scenes/:id/rewrite — 指示付きの書き直し (新リビジョン)
+        const sceneRewrite = pathname.match(
+          /^\/api\/scenes\/([^/]+)\/rewrite$/,
+        );
+        if (method === "POST" && sceneRewrite) {
+          const body = await parseBody(request, RewriteSceneRequestSchema);
+          if (body instanceof Response) return body;
+          const scene = await getSceneById(db, sceneRewrite[1]!);
+          if (!scene) return err(404, "not_found", "not found");
+          const episode = await getEpisodeById(db, scene.episode_id);
+          if (!episode) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, episode.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const contract = await getLatestContractByScene(db, scene.id);
+          if (!contract || contract.status !== "approved") {
+            return err(
+              400,
+              "bad_request",
+              "承認済みの Writing Contract がありません",
+            );
+          }
+          const job = await enqueueGenerateScene({
+            work,
+            sceneId: scene.id,
+            contractId: contract.id,
+            instruction: body.instruction,
+            idempotencyKey: `generate_scene:${scene.id}:${contract.id}:rewrite:${Date.now()}`,
+          });
+          if (!job) {
+            return err(
+              400,
+              "bad_request",
+              "プロバイダーのAPIキーが未登録です。キー設定から登録してください",
+            );
+          }
+          return json({ job: publicJob(job) }, 202);
+        }
+
+        // POST /api/scenes/:id/revisions — 手編集リビジョンの保存
+        const sceneRevs = pathname.match(
+          /^\/api\/scenes\/([^/]+)\/revisions$/,
+        );
+        if (method === "POST" && sceneRevs) {
+          const body = await parseBody(request, CreateRevisionRequestSchema);
+          if (body instanceof Response) return body;
+          const scene = await getSceneById(db, sceneRevs[1]!);
+          if (!scene) return err(404, "not_found", "not found");
+          const episode = await getEpisodeById(db, scene.episode_id);
+          if (!episode) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, episode.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const revision = await createSceneRevision(db, {
+            sceneId: scene.id,
+            contentJson: {
+              type: "doc",
+              content: body.text
+                .replace(/\r\n?/g, "\n")
+                .split(/\n+/)
+                .map((t) => t.trim())
+                .filter((t) => t.length > 0)
+                .map((t) => ({
+                  type: "paragraph",
+                  content: [{ type: "text", text: t }],
+                })),
+            },
+            source: "manual_edit",
+          });
+          return json({ revision }, 201);
         }
 
         return err(404, "not_found", "not found");
@@ -524,7 +826,15 @@ export function createApp(deps: WebDeps): FetchHandler {
         const work = await getWorkById(db, thread.work_id);
         if (!work) return err(404, "not_found", "work not found");
         const messages = await listMessages(db, thread.id);
-        return json({ work, thread, messages });
+        const canonFacts = await listCanonFactsByWork(db, work.id);
+        const proposals = await listProposalsByWork(db, work.id);
+        return json({
+          work,
+          thread,
+          messages,
+          canon_facts: canonFacts,
+          proposals,
+        });
       }
 
       // POST /api/internal/threads/:id/messages — assistant メッセージ永続化
@@ -558,9 +868,138 @@ export function createApp(deps: WebDeps): FetchHandler {
           ...(body.premise !== undefined ? { premise: body.premise } : {}),
           ...(body.genre !== undefined ? { genre: body.genre } : {}),
           ...(body.status !== undefined ? { status: body.status } : {}),
+          ...(body.charter !== undefined ? { charter: body.charter } : {}),
+          ...(body.policy !== undefined ? { policy: body.policy } : {}),
         });
         if (!work) return err(404, "not_found", "work not found");
         return json({ work });
+      }
+
+      // POST /api/internal/proposals — PROPOSE マーカーの実体化。
+      // episode/scene/contract/proposal をまとめて作り、決定に必要な ID を
+      // proposal.payload に入れて返す (message_id+kind で冪等)。
+      if (method === "POST" && pathname === "/api/internal/proposals") {
+        const body = await parseBody(request, CreateProposalRequestSchema);
+        if (body instanceof Response) return body;
+        const work = await getWorkById(db, body.work_id);
+        if (!work) return err(404, "not_found", "work not found");
+        const p = body.payload as {
+          episode_title?: string;
+          scene_title?: string;
+          scene_purpose?: string;
+          contract?: unknown;
+        };
+        if (!p.scene_title || !p.contract) {
+          return err(400, "bad_request", "proposal payload is incomplete");
+        }
+        let episode = p.episode_title
+          ? await findEpisodeByTitle(db, work.id, p.episode_title)
+          : await getLatestEpisode(db, work.id);
+        if (!episode) {
+          episode = await createEpisode(db, {
+            workId: work.id,
+            title: p.episode_title ?? "第1話",
+          });
+        }
+        const scene = await createScene(db, {
+          episodeId: episode.id,
+          title: p.scene_title,
+          purpose: p.scene_purpose ?? "",
+          status: "proposed",
+        });
+        const contract = await createWritingContract(db, {
+          sceneId: scene.id,
+          status: "draft",
+          payload: p.contract,
+        });
+        const proposal = await createProposal(db, {
+          workId: work.id,
+          threadId: body.thread_id,
+          messageId: body.message_id,
+          kind: body.kind,
+          payload: {
+            ...p,
+            episode_id: episode.id,
+            scene_id: scene.id,
+            contract_id: contract.id,
+          },
+        });
+        return json({ proposal });
+      }
+
+      // POST /api/internal/works/:id/canon-facts — CANON_FACTS の蓄積
+      const canonPath = pathname.match(
+        /^\/api\/internal\/works\/([^/]+)\/canon-facts$/,
+      );
+      if (method === "POST" && canonPath) {
+        const body = await parseBody(request, AddCanonFactsRequestSchema);
+        if (body instanceof Response) return body;
+        const work = await getWorkById(db, canonPath[1]!);
+        if (!work) return err(404, "not_found", "work not found");
+        const { canonFacts, added } = await addCanonFacts(db, {
+          workId: work.id,
+          statements: body.statements,
+          provenance: body.provenance,
+        });
+        return json({ canon_facts: canonFacts, added });
+      }
+
+      // GET /api/internal/scenes/:id/context — generate_scene の入力材料
+      const sceneCtxPath = pathname.match(
+        /^\/api\/internal\/scenes\/([^/]+)\/context$/,
+      );
+      if (method === "GET" && sceneCtxPath) {
+        const scene = await getSceneById(db, sceneCtxPath[1]!);
+        if (!scene) return err(404, "not_found", "scene not found");
+        const episode = await getEpisodeById(db, scene.episode_id);
+        if (!episode) return err(404, "not_found", "episode not found");
+        const work = await getWorkById(db, episode.work_id);
+        if (!work) return err(404, "not_found", "work not found");
+        const contract = await getLatestContractByScene(db, scene.id);
+        const canonFacts = await listCanonFactsByWork(db, work.id);
+        // 同じ作品内で自分より前のシーンの抜粋 (最新リビジョンの先頭200字)
+        const allScenes = await listScenesByWork(db, work.id);
+        const myIndex = allScenes.findIndex((sc) => sc.id === scene.id);
+        const prevScenes = [];
+        for (const prev of allScenes.slice(0, Math.max(0, myIndex)).slice(-3)) {
+          const revs = await listRevisionsByScene(db, prev.id);
+          const latest = revs.at(-1);
+          prevScenes.push({
+            id: prev.id,
+            title: prev.title,
+            excerpt: latest
+              ? tiptapDocToText(latest.content_json).slice(0, 200)
+              : "",
+          });
+        }
+        return json({
+          scene,
+          contract,
+          work,
+          canon_facts: canonFacts,
+          prev_scenes: prevScenes,
+        });
+      }
+
+      // POST /api/internal/scenes/:id/revisions — 生成成果の確定
+      const sceneRevPath = pathname.match(
+        /^\/api\/internal\/scenes\/([^/]+)\/revisions$/,
+      );
+      if (method === "POST" && sceneRevPath) {
+        const body = await parseBody(request, PersistRevisionRequestSchema);
+        if (body instanceof Response) return body;
+        const scene = await getSceneById(db, sceneRevPath[1]!);
+        if (!scene) return err(404, "not_found", "scene not found");
+        const revision = await createSceneRevision(db, {
+          sceneId: scene.id,
+          contentJson: body.content_json,
+          source: body.source,
+          jobId: body.job_id,
+        });
+        if (scene.status !== "generated") {
+          await updateSceneStatus(db, { id: scene.id, status: "generated" });
+        }
+        return json({ revision });
       }
 
       return err(404, "not_found", "not found");

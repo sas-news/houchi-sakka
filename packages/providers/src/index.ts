@@ -296,6 +296,8 @@ export class StubProvider implements Provider {
       chunkSize?: number;
       /** 呼び出しを必ず失敗させる。 */
       failWith?: Error;
+      /** 入力を見て出力を決めるレスポンダー (text より優先)。 */
+      respond?: (req: ProviderRequest) => string;
     } = {},
   ) {}
 
@@ -308,6 +310,7 @@ export class StubProvider implements Provider {
     this.lastRequests.push(req);
     if (this.stubOpts.failWith) throw this.stubOpts.failWith;
     const text =
+      this.stubOpts.respond?.(req) ??
       this.stubOpts.text ??
       `[stub ${req.model}] ${req.input.map((m) => m.content).join(" / ")}`;
     if (req.stream && onToken) {
