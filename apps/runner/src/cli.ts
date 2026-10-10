@@ -65,7 +65,10 @@ function phase1bStubResponder(req: ProviderRequest): string {
       "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
     ].join("\n");
   }
-  if (joined.includes("保留中の提案")) {
+  // 注意: 「保留中の提案」という語は ORCHESTRATOR_SYSTEM_PROMPT 本文にも
+  // 出るため、buildOrchestratorInput が pending 提案を注入した時だけ出る
+  // 見出し行で判定する (単に "保留中の提案" だと全ターンでマッチしてしまう)。
+  if (joined.includes("保留中の提案 (作者の決定待ち")) {
     return "出している提案の決定を待っています。承認か却下、修正の指示をください。";
   }
   const userTurns = req.input.filter((m) => m.role === "user").length;
