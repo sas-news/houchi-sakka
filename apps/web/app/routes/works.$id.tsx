@@ -90,6 +90,7 @@ const CS_KIND_LABEL: Record<ChangeSetInfo["kind"], string> = {
   normal: "変更提案",
   manual_edit: "手編集",
   force_override: "強制適用",
+  revision: "修正提案",
 };
 
 const OP_LABEL: Record<ChangeSetOp["op"], string> = {
@@ -97,6 +98,7 @@ const OP_LABEL: Record<ChangeSetOp["op"], string> = {
   revise_fact: "正典の書き換え",
   add_fact: "正典の追加",
   update_work: "作品情報の更新",
+  rewrite_scene: "本文の書き換え",
 };
 
 const FINDING_SEV_LABEL: Record<string, string> = {
@@ -137,6 +139,8 @@ function opText(op: ChangeSetOp): string {
       const keys = Object.entries(op.patch ?? {}).map(([k]) => k);
       return `作品情報を更新する (${keys.join(", ")})`;
     }
+    case "rewrite_scene":
+      return `シーンの本文を書き換える (新本文 ${op.text?.length ?? 0}字)`;
   }
 }
 
@@ -162,6 +166,7 @@ const STEP_LABEL: Record<string, string> = {
   fetch_context: "変更対象を読み込んでいます",
   review_scene: "影響するシーンをレビューしています",
   record_findings: "レビュー結果を記録しています",
+  propose_fix: "修正候補を作成しています",
   report: "結果を報告しています",
 };
 

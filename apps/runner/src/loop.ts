@@ -118,6 +118,7 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
         ...(req.message_id !== undefined
           ? { message_id: req.message_id }
           : {}),
+        kind: req.kind ?? "normal",
       });
       return res.change_set;
     },

@@ -40,8 +40,13 @@
 - **適用前検証 (verify-then-commit)**: 現状は「適用→canon_rev+1→review_change
   で事後検査」。spec が想定する検証済み適用 (dry-run で影響確定してから
   コミット) にはなっていない。目安: 中。
-- **下流修正の提案フロー**: review_change は findings を記録するだけ。
-  「修正候補を作者に提示→承認で適用」の循環が無い。目安: 中。
+- ~~**下流修正の提案フロー**: review_change は findings を記録するだけ。
+  「修正候補を作者に提示→承認で適用」の循環が無い。目安: 中。~~
+  実装済み (devin/downstream-fix-loop): findings>0 のレビューは fixer スキルで
+  修正候補の変更セット (kind=revision, rewrite_scene/revise_fact/add_fact ops)
+  を自動起票し対話カードで承認/却下できる。修正セットのレビューは再提案しない
+  (1段で停止)。残: 本文修正は「全文書き換えリビジョン」のみで、指示ベースの
+  再生成 (generate_scene 連携) は未接続。
 - **変更前スナップショットの保持**: canon_facts は valid_to_rev で閉じるが
   works.charter/policy の旧版は残らない。ロールバックは findings + 手動の
   打ち消し変更セットのみ。目安: 中。

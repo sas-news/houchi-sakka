@@ -145,11 +145,19 @@ export interface CanonFactInfo {
 }
 
 export interface ChangeSetOp {
-  op: "retire_fact" | "revise_fact" | "add_fact" | "update_work";
+  op:
+    | "retire_fact"
+    | "revise_fact"
+    | "add_fact"
+    | "update_work"
+    | "rewrite_scene";
   fact_id?: string;
   new_statement?: string;
   statement?: string;
   patch?: Partial<Pick<WorkInfo, "title" | "premise" | "genre">>;
+  /** rewrite_scene: 対象シーンと書き換え後の本文。 */
+  scene_id?: string;
+  text?: string;
 }
 
 export interface ChangeSetImpact {
@@ -178,7 +186,7 @@ export interface ChangeSetInfo {
   thread_id: string | null;
   /** <<CHANGESET>> を出した assistant メッセージ (提案カードの紐付け)。 */
   message_id: string | null;
-  kind: "normal" | "manual_edit" | "force_override";
+  kind: "normal" | "manual_edit" | "force_override" | "revision";
   title: string;
   description: string;
   ops: ChangeSetOp[];

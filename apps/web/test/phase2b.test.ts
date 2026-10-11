@@ -300,6 +300,74 @@ describe("Phase 2b: 変更セット", () => {
     ).toBe("manual_edit");
   });
 
+  it("kind=revision の修正セット承認で rewrite_scene が新リビジョンとして適用される", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    const { sceneId } = await seedSceneWithDep(call, cookie, workId);
+
+    // review_change の自動提案相当: kind=revision + rewrite_scene op
+    const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "修正候補: 汽車の設定変更",
+      description: "レビュー findings から自動生成",
+      kind: "revision",
+      ops: [
+        {
+          op: "rewrite_scene",
+          scene_id: sceneId,
+          text: "週に一度だけ戻る汽車は来る。",
+        },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const { change_set } = (await res.json()) as {
+      change_set: {
+        id: string;
+        kind: string;
+        impact: { scenes: { id: string }[] };
+      };
+    };
+    expect(change_set.kind).toBe("revision");
+    // 影響分析は書き換え対象シーンを拾う
+    expect(change_set.impact.scenes.map((s) => s.id)).toContain(sceneId);
+
+    const app2 = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(app2.status).toBe(200);
+    const body = (await app2.json()) as {
+      change_set: { status: string };
+      job: { kind: string } | null;
+    };
+    expect(body.change_set.status).toBe("applied");
+    // 通常の適用と同じく review_change が起票される
+    expect(body.job?.kind).toBe("review_change");
+
+    // 新リビジョンが change_set_id 紐付きで保存される
+    const prose = (await (
+      await call("GET", `/api/works/${workId}/prose`, undefined, {
+        token: null,
+        cookie,
+      })
+    ).json()) as {
+      revisions: {
+        scene_id: string;
+        change_set_id: string | null;
+        source: string;
+        content_json: unknown;
+      }[];
+    };
+    const rev = prose.revisions.find((r) => r.change_set_id === change_set.id);
+    expect(rev).toBeDefined();
+    expect(rev!.scene_id).toBe(sceneId);
+    expect(JSON.stringify(rev!.content_json)).toContain(
+      "週に一度だけ戻る汽車は来る",
+    );
+  });
+
   it("findings の記録と dismiss/open 切替ができる", async () => {
     const { app } = makeApp();
     const call = makeCall(app);

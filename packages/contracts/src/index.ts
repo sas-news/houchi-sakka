@@ -1076,11 +1076,15 @@ export type WorkPatchRequest = z.infer<typeof WorkPatchRequestSchema>;
 // Phase 2b: 変更セット + 影響分析 + 正典リビジョン (spec §5, §5.5, §6.3, §3)
 // ---------------------------------------------------------------------------
 
-/** 変更セットの種別 (force_override = 強制適用の記録, spec §5.4)。 */
+/**
+ * 変更セットの種別 (force_override = 強制適用の記録, spec §5.4;
+ * revision = review_change の findings から自動生成した修正候補)。
+ */
 export const CHANGE_SET_KINDS = [
   "normal",
   "manual_edit",
   "force_override",
+  "revision",
 ] as const;
 export const ChangeSetKindSchema = z.enum(CHANGE_SET_KINDS);
 export type ChangeSetKind = z.infer<typeof ChangeSetKindSchema>;
@@ -1120,6 +1124,12 @@ export const ChangeSetOpSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("update_work"),
     patch: ChangeSetWorkPatchSchema,
+  }),
+  /** シーン本文の書き換え (新リビジョンとして適用。修正提案で使う)。 */
+  z.object({
+    op: z.literal("rewrite_scene"),
+    scene_id: z.string().min(1),
+    text: z.string().min(1).max(200000),
   }),
 ]);
 export type ChangeSetOp = z.infer<typeof ChangeSetOpSchema>;
@@ -1204,6 +1214,8 @@ export const CreateChangeSetRequestSchema = z.object({
   description: z.string().max(20000).default(""),
   ops: z.array(ChangeSetOpSchema).min(1).max(100),
   message_id: z.string().min(1).nullable().optional(),
+  /** 起票種別。省略時 normal。revision は review_change の修正提案のみ。 */
+  kind: z.enum(["normal", "revision"]).default("normal"),
 });
 export type CreateChangeSetRequest = z.infer<typeof CreateChangeSetRequestSchema>;
 
@@ -1423,6 +1435,12 @@ export const ReviewChangeCheckpointSchema = z.object({
   reviews: z.record(z.unknown()).optional(),
   findings_recorded: z.boolean().optional(),
   message_id: z.string().optional(),
+  /** 修正提案スキルの出力 ops (再開時にスキル再実行しないため保持)。 */
+  fix_ops: z.array(z.unknown()).optional(),
+  /** 修正提案変更セットの description (再開時に保持)。 */
+  fix_description: z.string().optional(),
+  /** 生成した修正提案変更セットの id。 */
+  fix_change_set_id: z.string().optional(),
 });
 export type ReviewChangeCheckpoint = z.infer<
   typeof ReviewChangeCheckpointSchema
@@ -1444,5 +1462,7 @@ export const ReviewChangeResultSchema = z.object({
   change_set_id: z.string(),
   scenes_reviewed: z.number().int(),
   findings_count: z.number().int(),
+  /** 自動生成した修正提案変更セット (無ければ null)。 */
+  fix_change_set_id: z.string().nullable(),
 });
 export type ReviewChangeResult = z.infer<typeof ReviewChangeResultSchema>;

@@ -1630,6 +1630,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         });
         const cs = await createChangeSet(db, {
           workId: work.id,
+          kind: body.kind,
           title: body.title,
           description: body.description,
           ops: body.ops,

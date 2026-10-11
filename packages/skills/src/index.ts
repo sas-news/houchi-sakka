@@ -289,6 +289,141 @@ export const criticSkill: SkillDefinition<CriticInput, CriticOutput> = {
 };
 
 // ---------------------------------------------------------------------------
+// fixer — review findings から修正候補の変更セット ops を提案する
+// ---------------------------------------------------------------------------
+
+export type FixerFindingInput = {
+  /** findings 配列内の添字 (fixes 側からこの番号で参照する)。 */
+  index: number;
+  kind: string;
+  severity: string;
+  summary: string;
+  detail: string;
+  /** 指摘対象のシーン (rewrite_scene 対象)。scene_id を持たない finding では null。 */
+  scene: {
+    id: string;
+    title: string;
+    prose_md: string;
+    /** 最新の Writing Contract (JSON)。無ければ null。 */
+    contract: unknown;
+  } | null;
+  /** 指摘対象の正典メモ (revise_fact 対象)。fact_id を持たない finding では null。 */
+  fact: { id: string; statement: string } | null;
+};
+
+export type FixerInput = {
+  work: { title: string; premise: string };
+  /** レビュー対象だった変更セット。 */
+  change_set: { title: string; description: string };
+  canon_facts: { id: string; statement: string }[];
+  findings: FixerFindingInput[];
+};
+
+const FixActionSchema = z.object({
+  /** 対象 finding の添字。 */
+  finding_index: z.number().int().min(0),
+  /** どう直すか。none = 自動修正しない (人間判断に任せる)。 */
+  action: z.enum(["rewrite_scene", "revise_fact", "add_fact", "none"]),
+  /**
+   * rewrite_scene → 書き換え後の本文全文 (markdown)。
+   * revise_fact → 修正後の正典宣言文。add_fact → 追加する宣言文。
+   * none のときは空文字列。
+   */
+  text: z.string().default(""),
+  /** revise_fact の対象正典 id (正典メモ一覧に記載された fact_id をそのまま書く)。 */
+  fact_id: z.string().default(""),
+  /** その修正方針を選んだ理由 (人間向け, 1行)。 */
+  reason: z.string().default(""),
+});
+
+export const FixPlanSchema = z.object({
+  fixes: z.array(FixActionSchema).default([]),
+});
+export type FixPlan = z.infer<typeof FixPlanSchema>;
+
+export const fixerSkill: SkillDefinition<FixerInput, FixPlan> = {
+  name: "fixer",
+  description:
+    "レビュー findings に対し、シーン書き換え/正典改訂/正典追加の修正候補を提案する。",
+  tools: ["readFile", "writePropose"],
+  buildPrompt(input) {
+    const findingBlocks = input.findings.map((f) => {
+      const lines = [
+        `### finding #${f.index} [${f.kind}/${f.severity}]`,
+        `概要: ${f.summary}`,
+        f.detail ? `詳細: ${f.detail}` : "",
+      ];
+      if (f.scene) {
+        lines.push(
+          `対象シーン: ${f.scene.title} (scene_id: ${f.scene.id})`,
+          f.scene.contract
+            ? `契約: ${JSON.stringify(f.scene.contract)}`
+            : "",
+          "現在の本文:",
+          f.scene.prose_md || "(空)",
+        );
+      }
+      if (f.fact) {
+        lines.push(`対象正典: ${f.fact.statement} (fact_id: ${f.fact.id})`);
+      }
+      return lines.filter((s) => s !== "").join("\n");
+    });
+
+    return [
+      {
+        role: "system",
+        content: [
+          "あなたは小説作品の「修正案担当」です。",
+          "レビューで検出された各 finding に対し、修正候補を立ててください。",
+          "修正は必ず以下のいずれかで表現します:",
+          "- rewrite_scene: シーン本文を書き換える (text に修正後の本文全文を書く)",
+          "- revise_fact: 既存の正典宣言を書き換える (text に新しい宣言文を書く)",
+          "- add_fact: 新しい正典宣言を追加する (text に宣言文を書く)",
+          "- none: 自動修正しない (人間の判断に任せる。text は空にする)",
+          "",
+          "方針:",
+          "- finding の対象が本文の不整合なら rewrite_scene を選び、",
+          "  契約 (POV/必須イベント/禁止事項) と正典に矛盾しない全文を書き直す。",
+          "- 対象が正典の記述自体の問題なら revise_fact。",
+          "- 不足している事実の補完なら add_fact。",
+          "- 情報不足や判断が作者のものに踏み込む場合は none。",
+          "- rewrite_scene の text は本文全体を書くこと。一部だけの差分ではなく全文。",
+          "",
+          "出力形式:",
+          '{ "fixes": [ { "finding_index": 0, "action": "rewrite_scene|revise_fact|add_fact|none", "text": "…", "fact_id": "…", "reason": "…" } ] }',
+          "revise_fact のとき fact_id は必須 (他の action では空にする)。",
+          "",
+          JSON_OUTPUT_DIRECTIVE,
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `【作品】${input.work.title}`,
+          `前提: ${input.work.premise}`,
+          "",
+          `【レビュー対象の変更セット】${input.change_set.title}`,
+          input.change_set.description || "",
+          "",
+          "【正典メモ】",
+          input.canon_facts.length > 0
+            ? input.canon_facts
+                .map((f) => `- ${f.statement} (fact_id: ${f.id})`)
+                .join("\n")
+            : "(なし)",
+          "",
+          "【検出された findings】",
+          ...findingBlocks,
+        ]
+          .filter((s) => s !== "")
+          .join("\n"),
+      },
+    ];
+  },
+  outputSchema: FixPlanSchema,
+};
+
+// ---------------------------------------------------------------------------
 // レジストリ
 // ---------------------------------------------------------------------------
 
@@ -296,6 +431,7 @@ export const SKILLS = {
   planner: plannerSkill,
   writer: writerSkill,
   critic: criticSkill,
+  fixer: fixerSkill,
 } as const;
 
 export type SkillName = keyof typeof SKILLS;
