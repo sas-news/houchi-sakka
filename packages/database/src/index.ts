@@ -40,6 +40,7 @@ import {
   type ProgressEventType,
   type Proposal,
   type ProviderKey,
+  type PublicWorkEpisode,
   type Release,
   type ReleaseScene,
   type ReviewFinding,
@@ -1779,4 +1780,43 @@ export async function setReleaseStatus(
     RETURNING *
   `)) as Row[];
   return rows.length > 0 ? rowToRelease(rows[0]!) : null;
+}
+
+/**
+ * /w/:id 用の公開目次: 話ごとの最新 published リリースと版数 (話順)。
+ * published が 1 件も無い話は含めない。正典・下書き・ユーザー情報は
+ * 返さない (spec P9)。
+ */
+export async function listPublicWorkEpisodes(
+  db: DbLike,
+  workId: string,
+): Promise<PublicWorkEpisode[]> {
+  const [episodes, releases] = await Promise.all([
+    listEpisodesByWork(db, workId),
+    listReleasesByWork(db, workId),
+  ]);
+  const publishedByEpisode = new Map<string, Release[]>();
+  for (const r of releases) {
+    if (r.status !== "published") continue;
+    const list = publishedByEpisode.get(r.episode_id) ?? [];
+    list.push(r);
+    publishedByEpisode.set(r.episode_id, list);
+  }
+  const rows: PublicWorkEpisode[] = [];
+  for (const ep of episodes) {
+    const rels = publishedByEpisode.get(ep.id);
+    if (!rels || rels.length === 0) continue;
+    // listReleasesByWork は rev_no 昇順なので末尾が最新版
+    const latest = rels.at(-1)!;
+    rows.push({
+      episode_id: ep.id,
+      ord: ep.ord,
+      title: latest.title,
+      version_count: rels.length,
+      release_id: latest.id,
+      rev_no: latest.rev_no,
+      published_at: latest.published_at,
+    });
+  }
+  return rows;
 }

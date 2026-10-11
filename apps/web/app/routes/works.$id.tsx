@@ -13,6 +13,7 @@ import {
   type RouterContextProvider,
 } from "react-router";
 import { api, ApiError } from "../lib/api";
+import { diffParagraphs } from "../lib/diff";
 import { getWorkDetail, requireUser } from "../lib/server";
 import type {
   ChangeSetInfo,
@@ -499,7 +500,89 @@ function ChangeSetCard({
   );
 }
 
-/** 本文ビュー (Tiptap JSON → 段落描画 + リビジョン切替 + 書き直し/手編集)。 */
+/** リビジョン比較ビュー (第n稿 vs 第m稿、インライン統一 diff)。 */
+function RevisionDiffView({
+  sorted,
+  fromRev,
+  toRev,
+  onFrom,
+  onTo,
+  onClose,
+}: {
+  sorted: SceneRevisionInfo[];
+  fromRev: number;
+  toRev: number;
+  onFrom: (revNo: number) => void;
+  onTo: (revNo: number) => void;
+  onClose: () => void;
+}) {
+  const before = sorted.find((r) => r.rev_no === fromRev) ?? sorted[0]!;
+  const after =
+    sorted.find((r) => r.rev_no === toRev) ?? sorted.at(-1)!;
+  const rows = diffParagraphs(
+    docToParagraphs(before.content_json),
+    docToParagraphs(after.content_json),
+  );
+  const added = rows.filter((r) => r.kind === "added").length;
+  const removed = rows.filter((r) => r.kind === "removed").length;
+  const revOptions = sorted.map((r) => (
+    <option key={r.id} value={r.rev_no}>
+      第{r.rev_no}稿
+      {r.source === "manual_edit" ? " (手編集)" : ""}
+    </option>
+  ));
+  return (
+    <div>
+      <div className="diff-selects">
+        <label htmlFor="diff-from">比較元</label>
+        <select
+          id="diff-from"
+          value={fromRev}
+          onChange={(e) => onFrom(Number(e.target.value))}
+        >
+          {revOptions}
+        </select>
+        <label htmlFor="diff-to">比較先</label>
+        <select
+          id="diff-to"
+          value={toRev}
+          onChange={(e) => onTo(Number(e.target.value))}
+        >
+          {revOptions}
+        </select>
+      </div>
+      <p className="muted">
+        第{before.rev_no}稿 → 第{after.rev_no}稿: 追加 {added}行・削除 {removed}
+        行
+      </p>
+      {added === 0 && removed === 0 ? (
+        <p className="muted">2つの稿に差分はありません。</p>
+      ) : (
+        <div className="diff-view">
+          {rows.map((row, i) => (
+            <div key={i} className={`diff-line diff-line--${row.kind}`}>
+              <span className="diff-sign" aria-hidden="true">
+                {row.kind === "added"
+                  ? "+"
+                  : row.kind === "removed"
+                    ? "−"
+                    : "　"}
+              </span>
+              {row.text}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onClose}>
+          閲覧に戻る
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 本文ビュー (Tiptap JSON → 段落描画 + リビジョン切替 + 差分 + 書き直し/手編集)。 */
 function ProseView({
   scene,
   revisions,
@@ -518,8 +601,12 @@ function ProseView({
     [revisions],
   );
   const [revNo, setRevNo] = useState<number | null>(null);
-  const [mode, setMode] = useState<"read" | "rewrite" | "edit">("read");
+  const [mode, setMode] = useState<"read" | "rewrite" | "edit" | "compare">(
+    "read",
+  );
   const [draft, setDraft] = useState("");
+  const [cmpFrom, setCmpFrom] = useState<number | null>(null);
+  const [cmpTo, setCmpTo] = useState<number | null>(null);
   const current = sorted.find((r) => r.rev_no === revNo) ?? sorted.at(-1);
   const paras = current ? docToParagraphs(current.content_json) : [];
 
@@ -544,6 +631,15 @@ function ProseView({
       {scene.purpose ? <p className="muted">目的: {scene.purpose}</p> : null}
       {sorted.length === 0 ? (
         <p className="muted">まだ本文がありません。</p>
+      ) : mode === "compare" ? (
+        <RevisionDiffView
+          sorted={sorted}
+          fromRev={cmpFrom ?? sorted[0]!.rev_no}
+          toRev={cmpTo ?? sorted.at(-1)!.rev_no}
+          onFrom={setCmpFrom}
+          onTo={setCmpTo}
+          onClose={() => setMode("read")}
+        />
       ) : (
         <>
           <label htmlFor="rev-select">リビジョン</label>
@@ -596,8 +692,30 @@ function ProseView({
               手編集
             </button>
           ) : null}
+          {sorted.length >= 2 ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => {
+                // 既定の比較対象: 表示中の稿とその1つ前
+                // (表示中が第1稿なら 第1稿→第2稿)
+                const cur = current ?? sorted.at(-1)!;
+                const curIdx = Math.max(
+                  0,
+                  sorted.findIndex((r) => r.id === cur.id),
+                );
+                const toIdx = curIdx === 0 ? 1 : curIdx;
+                setCmpFrom(sorted[toIdx - 1]!.rev_no);
+                setCmpTo(sorted[toIdx]!.rev_no);
+                setMode("compare");
+              }}
+            >
+              比較
+            </button>
+          ) : null}
         </div>
-      ) : (
+      ) : mode === "compare" ? null : (
         <form onSubmit={(e) => void submitAction(e)}>
           <label htmlFor="revise-input">
             {mode === "rewrite" ? "書き直しの指示" : "本文を編集"}
@@ -896,6 +1014,19 @@ function ReleasesView({
         話ごとに、その時点の本文を凍結した不変の公開版 (リリース) を発行します。
         公開後に本文を改稿しても、発行済みの公開版は変わりません。
       </p>
+      {data.releases.some((r) => r.status === "published") ? (
+        <p>
+          <a
+            className="secondary release-open"
+            href={`/w/${workId}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            作品ページを開く
+          </a>
+          <span className="muted"> 読者向けの公開目次 (/w/...) です。</span>
+        </p>
+      ) : null}
       {data.episodes.map((ep) => {
         const rels = releasesByEpisode.get(ep.id) ?? [];
         const latest = rels.at(-1);

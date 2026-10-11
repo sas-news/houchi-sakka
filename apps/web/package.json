@@ -25,6 +25,7 @@
     "@houchi/secrets": "workspace:*",
     "@houchi/workspace": "workspace:*",
     "better-auth": "^1.7.7",
+    "diff": "^9.0.0",
     "drizzle-orm": "^0.44.5",
     "isbot": "^5.2.2",
     "react": "^19.3.0",

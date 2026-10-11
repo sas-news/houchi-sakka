@@ -1086,3 +1086,108 @@ button:disabled {
   font-size: 1.3rem;
   margin-bottom: 12px;
 }
+
+/* ---------- Phase 3b: 読者作品ページ /w/:id ---------- */
+.reader-premise {
+  font-size: 0.95rem;
+  line-height: 1.9;
+  color: var(--ink);
+  margin: 0 0 28px;
+  white-space: pre-wrap;
+}
+
+.reader-toc {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.reader-toc li {
+  border-bottom: 1px solid var(--border);
+}
+
+.reader-toc-link {
+  display: block;
+  padding: 14px 4px;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.reader-toc-link:hover .reader-toc-title {
+  color: var(--accent);
+}
+
+.reader-toc-title {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.reader-toc-meta {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* ---------- Phase 3b: 本文タブ リビジョン差分 ---------- */
+.diff-selects {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.diff-selects label {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.diff-view {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+  line-height: 1.8;
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 4px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-line + .diff-line {
+  border-top: 1px solid var(--neutral-soft);
+}
+
+.diff-sign {
+  flex: 0 0 1em;
+  color: var(--muted);
+  user-select: none;
+}
+
+.diff-line--added {
+  background: #e6f4e6;
+  border-left: 3px solid #3a9c4f;
+}
+
+.diff-line--added .diff-sign {
+  color: #2c7a3f;
+  font-weight: 700;
+}
+
+.diff-line--removed {
+  background: #fdecec;
+  border-left: 3px solid #d05555;
+}
+
+.diff-line--removed .diff-sign {
+  color: #b04a4a;
+  font-weight: 700;
+}
