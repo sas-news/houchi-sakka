@@ -47,7 +47,10 @@ export interface JobInfo {
   id: string;
   kind: string;
   status: "queued" | "leased" | "completed" | "failed" | "cancelled";
+  /** 実行体が記録した失敗理由。 */
   error: string | null;
+  /** ジョブの入力 (trigger_message_id / key_ref / model 等)。 */
+  payload: Record<string, unknown>;
   created_at: number;
 }
 
@@ -149,7 +152,9 @@ export interface ChangeSetOp {
   fact_id?: string;
   new_statement?: string;
   statement?: string;
-  patch?: Partial<Pick<WorkInfo, "title" | "premise" | "genre">>;
+  patch?: Partial<
+    Pick<WorkInfo, "title" | "premise" | "genre" | "charter" | "policy">
+  >;
 }
 
 export interface ChangeSetImpact {
@@ -190,6 +195,8 @@ export interface ChangeSetInfo {
   force_reason: string | null;
   /** 提案時点の canon_rev (spec §8.3 楽観的競合検出)。 */
   base_rev: number | null;
+  /** charter/policy 更新の適用時に退避した旧値 (なければ null)。 */
+  prev_settings: { charter: unknown | null; policy: unknown | null } | null;
   findings: ReviewFindingInfo[];
   created_at: number;
   decided_at: number | null;
@@ -204,6 +211,8 @@ export interface WorkDetail {
   change_sets: ChangeSetInfo[];
   active_job: { job: JobInfo; progress: ProgressEventInfo[] } | null;
   queued_jobs: number;
+  /** 実行履歴 (全 status、新しい順)。 */
+  recent_jobs: JobInfo[];
 }
 
 export interface WorkProse {

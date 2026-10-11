@@ -280,6 +280,11 @@ export const changeSets = sqliteTable(
     baseRev: integer("base_rev"),
     /** 提案を出したチャットメッセージ (カード紐付け)。 */
     messageId: text("message_id"),
+    /**
+     * charter/policy を変える update_work op 適用時に退避した
+     * 適用前の値 ({charter, policy} の JSON。それ以外は NULL)。
+     */
+    prevSettings: text("prev_settings"),
     createdAt: integer("created_at").notNull(),
     decidedAt: integer("decided_at"),
     appliedAt: integer("applied_at"),

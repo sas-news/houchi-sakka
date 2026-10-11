@@ -660,6 +660,46 @@ button:disabled {
   color: var(--muted);
 }
 
+/* 実行履歴 (ジョブの状態・失敗理由・再送) */
+.job-history {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.job-history > strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.job-history ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.job-history li {
+  padding: 6px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.job-history li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.job-history .job-error {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.job-history button {
+  margin-top: 6px;
+}
+
 @media (min-width: 720px) {
   .work-layout {
     display: grid;
