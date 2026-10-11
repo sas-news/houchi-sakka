@@ -178,6 +178,129 @@ function phase2aStubResponder(req: ProviderRequest): string {
   ].join("\n");
 }
 
+/**
+ * STUB_SCENARIO=phase2b: phase2a の流れ (前提→計画→提案→多段生成) に加えて
+ * 4往復目=<<CHANGESET>> (revise_fact), 5往復目=<<CHANGESET>> (update_work)
+ * を出す E2E 用応答。レビュー用の critic 呼び出しは「週1だけ走っている」
+ * を含む新正典と「汽車は来ない」本文の衝突を返す。
+ */
+function phase2bStubResponder(req: ProviderRequest): string {
+  const joined = req.input.map((m) => m.content).join("\n");
+
+  if (joined.includes("「計画担当」") || joined.includes("計画担当")) {
+    return JSON.stringify({
+      episodes: [
+        {
+          title: "第1話 廃線の街",
+          scenes: [
+            {
+              title: "廃線ホーム",
+              purpose: "主人公の旅立ちの動機を示す導入",
+            },
+          ],
+        },
+      ],
+    });
+  }
+  if (joined.includes("検査担当")) {
+    // review_change: 新正典「週1だけ走っている」が注入されている時は
+    // 本文「もう戻る汽車は来ない」との衝突を返す。
+    if (
+      joined.includes("週1だけ走っている") &&
+      joined.includes("汽車は来ない")
+    ) {
+      return JSON.stringify({
+        violations: [
+          {
+            rule: "canon",
+            detail:
+              "本文の「もう戻る汽車は来ない」という描写は新しい正典「汽車は週1だけ走っている」と矛盾する",
+            severity: "high",
+          },
+        ],
+        notes: ["正典リビジョン適用後の検査"],
+      });
+    }
+    // generate_scene の批判段: ドラフト (切符なし) には high 指摘。
+    if (!joined.includes("切符を眺め")) {
+      return JSON.stringify({
+        violations: [
+          {
+            rule: "required_events",
+            detail: "必須イベント「濡れた切符」が本文に出ていない",
+            severity: "high",
+          },
+        ],
+        notes: ["情景描写は契約に合致している"],
+      });
+    }
+    return JSON.stringify({ violations: [], notes: ["契約に適合"] });
+  }
+  if (joined.includes("執筆担当")) {
+    const revised = joined.includes("この指摘を直して書き直してください");
+    const prose = revised
+      ? [
+          "雨がやんだ頃、廃線のホームに少女が立っていた。",
+          "",
+          "彼女は濡れた切符を眺め、それから意を決したように線路の先を見上げた。もう戻る汽車は来ない。来ないからこそ、歩き出す理由ができた。",
+          "",
+          "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
+        ].join("\n")
+      : [
+          "雨がやんだ頃、廃線のホームに少女が立っていた。",
+          "",
+          "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
+        ].join("\n");
+    return JSON.stringify({
+      prose_md: prose,
+      canon_facts_new: ["都市の心音は石畳の下に響いている"],
+      depends_on: [
+        { target_kind: "canon_fact", target_ref: "汽車はもう走っていない" },
+      ],
+    });
+  }
+
+  if (joined.includes("保留中の提案 (作者の決定待ち")) {
+    return "出している提案の決定を待っています。承認か却下、修正の指示をください。";
+  }
+  const userTurns = req.input.filter((m) => m.role === "user").length;
+  if (userTurns >= 5) {
+    // 5往復目: 作品の構造情報を変える変更セット (reject → force 確認用)
+    return [
+      "舞台を宇宙に近い廃都市に変えましょう。ジャンルを変更する変更セットを提案します。",
+      '<<CHANGESET {"title": "ジャンルの変更", "description": "廃都市の色彩を強めるため、ジャンルを変更します", "ops": [{"op": "update_work", "patch": {"genre": "ポストアポカリプス"}}]}>>',
+    ].join("\n");
+  }
+  if (userTurns === 4) {
+    // 4往復目: 正典の書き換えを提案。fact_id は入力に注入されたものを拾う。
+    const m = joined.match(
+      /\[fact_id: ([0-9a-f-]{36})\] 汽車はもう走っていない/,
+    );
+    const factId = m?.[1] ?? "unknown-fact";
+    return [
+      "実は汽車は週に一度だけ動いている、という設定に変えたいですね。正典を書き換える変更セットを提案します。",
+      `<<CHANGESET {"title": "汽車の設定変更", "description": "汽車は週1だけ走っている設定に変更します", "ops": [{"op": "revise_fact", "fact_id": "${factId}", "new_statement": "汽車は週1だけ走っている"}]}>>`,
+    ].join("\n");
+  }
+  if (userTurns === 3) {
+    return [
+      "計画の第1話から、冒頭シーンをこの契約で書きましょう。問題なければ承認してください。",
+      '<<PROPOSE {"episode_title": "第1話 廃線の街", "scene_title": "廃線ホーム", "scene_purpose": "主人公の旅立ちの動機を示す導入", "contract": {"role": "物語の導入。主人公が旅に出る決意をする", "pov": "三人称・主人公寄り", "required_events": ["雨上がりの廃線ホーム", "濡れた切符", "都市の心音を聞く"], "forbidden": ["説明口調の背景説明"], "knowledge_notes": "世界観はメトロポリス幻想", "connections": "前話なし。次シーンで列車跡をたどる"}}>>',
+    ].join("\n");
+  }
+  if (userTurns === 2) {
+    return [
+      "前提は固まりました。作品の計画を立てましょう — 起票しておきます。",
+      "<<RUN_PLAN>>",
+    ].join("\n");
+  }
+  return [
+    "いいですね。その方向で前提を固めましょう。ジャンルと主人公の動機を整理しました。次に計画を立てるか聞かせてください。",
+    '<<CANON_FACTS ["主人公は廃都市に暮らす少女", "汽車はもう走っていない"]>>',
+    '<<WORK_PATCH {"premise": "廃都市を出て行く少女の旅", "genre": "ファンタジー", "status": "active"}>>',
+  ].join("\n");
+}
+
 function intEnv(name: string, fallback: number): number {
   const v = process.env[name];
   if (!v) return fallback;
@@ -222,6 +345,9 @@ async function main(): Promise<void> {
   }
   if (process.env.STUB_SCENARIO === "phase2a") {
     providers["stub"] = new StubProvider({ respond: phase2aStubResponder });
+  }
+  if (process.env.STUB_SCENARIO === "phase2b") {
+    providers["stub"] = new StubProvider({ respond: phase2bStubResponder });
   }
 
   if (defaultProvider) {

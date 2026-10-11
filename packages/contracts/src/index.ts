@@ -13,6 +13,7 @@ export const JOB_KIND_SMOKE_GENERATE = "smoke_generate" as const;
 export const JOB_KIND_ORCHESTRATOR_TURN = "orchestrator_turn" as const;
 export const JOB_KIND_GENERATE_SCENE = "generate_scene" as const;
 export const JOB_KIND_PLAN_WORK = "plan_work" as const;
+export const JOB_KIND_REVIEW_CHANGE = "review_change" as const;
 
 /** ジョブ種別。拡張前提の文字列型。 */
 export const JobKindSchema = z.string().min(1);
@@ -348,6 +349,8 @@ export const WorkSchema = z.object({
   provider: z.string().nullable(),
   model: z.string().nullable(),
   key_ref: z.string().nullable(),
+  /** 現在の正典リビジョン (spec §6.3。変更セット適用ごとに +1)。 */
+  canon_rev: z.number().int(),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -560,6 +563,8 @@ export const SceneRevisionSchema = z.object({
   source: RevisionSourceSchema,
   /** AI生成リビジョンを作ったジョブ (手編集は null)。 */
   job_id: z.string().nullable(),
+  /** このリビジョンを記録した変更セット (手編集の紐付け, spec §5.5)。 */
+  change_set_id: z.string().nullable(),
   created_at: z.number(),
 });
 export type SceneRevision = z.infer<typeof SceneRevisionSchema>;
@@ -611,8 +616,12 @@ export const CanonFactSchema = z.object({
   id: z.string(),
   work_id: z.string(),
   statement: z.string(),
-  /** 出所 (例: "orchestrator", "author")。 */
+  /** 出所 (例: "orchestrator", "author", "change_set:<id>")。 */
   provenance: z.string(),
+  /** この行が現行になった正典リビジョン (spec §6.3。無バージョン追加は null)。 */
+  valid_from_rev: z.number().int().nullable(),
+  /** 閉じられた正典リビジョン (null=現行)。 */
+  valid_to_rev: z.number().int().nullable(),
   created_at: z.number(),
 });
 export type CanonFact = z.infer<typeof CanonFactSchema>;
@@ -1061,3 +1070,257 @@ export const WorkPatchRequestSchema = z.object({
   policy: z.record(z.unknown()).optional(),
 });
 export type WorkPatchRequest = z.infer<typeof WorkPatchRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 2b: 変更セット + 影響分析 + 正典リビジョン (spec §5, §5.5, §6.3, §3)
+// ---------------------------------------------------------------------------
+
+/** 変更セットの種別 (force_override = 強制適用の記録, spec §5.4)。 */
+export const CHANGE_SET_KINDS = [
+  "normal",
+  "manual_edit",
+  "force_override",
+] as const;
+export const ChangeSetKindSchema = z.enum(CHANGE_SET_KINDS);
+export type ChangeSetKind = z.infer<typeof ChangeSetKindSchema>;
+
+/** 変更セットの状態 (proposed → approve→applied / reject→rejected)。 */
+export const CHANGE_SET_STATUSES = [
+  "proposed",
+  "approved",
+  "rejected",
+  "applied",
+] as const;
+export const ChangeSetStatusSchema = z.enum(CHANGE_SET_STATUSES);
+export type ChangeSetStatus = z.infer<typeof ChangeSetStatusSchema>;
+
+/** update_work op のパッチ (構造情報のみ。status は変更不可)。 */
+export const ChangeSetWorkPatchSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  premise: z.string().max(20000).optional(),
+  genre: z.string().max(200).optional(),
+  charter: z.record(z.unknown()).optional(),
+  policy: z.record(z.unknown()).optional(),
+});
+export type ChangeSetWorkPatch = z.infer<typeof ChangeSetWorkPatchSchema>;
+
+/** 変更セットの操作 (spec §5.1 の ops 語彙)。 */
+export const ChangeSetOpSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("retire_fact"), fact_id: z.string().min(1) }),
+  z.object({
+    op: z.literal("revise_fact"),
+    fact_id: z.string().min(1),
+    new_statement: z.string().min(1).max(20000),
+  }),
+  z.object({
+    op: z.literal("add_fact"),
+    statement: z.string().min(1).max(20000),
+  }),
+  z.object({
+    op: z.literal("update_work"),
+    patch: ChangeSetWorkPatchSchema,
+  }),
+]);
+export type ChangeSetOp = z.infer<typeof ChangeSetOpSchema>;
+
+/** 影響分析の結果 (決定的 MVP: ops から影響対象を列挙, spec §3)。 */
+export const ChangeSetImpactSchema = z.object({
+  scenes: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      reason: z.string().default(""),
+    }),
+  ),
+  facts: z.array(
+    z.object({
+      id: z.string(),
+      statement: z.string(),
+      reason: z.string().default(""),
+    }),
+  ),
+  contracts: z.array(
+    z.object({
+      id: z.string(),
+      scene_id: z.string(),
+      reason: z.string().default(""),
+    }),
+  ),
+  /** 人間向けサマリー文 (例: "シーン2件・正典1件・契約2件に影響する可能性")。 */
+  summary: z.string().default(""),
+});
+export type ChangeSetImpact = z.infer<typeof ChangeSetImpactSchema>;
+
+export const ChangeSetSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  kind: ChangeSetKindSchema,
+  title: z.string(),
+  description: z.string(),
+  ops: z.array(ChangeSetOpSchema),
+  status: ChangeSetStatusSchema,
+  impact: ChangeSetImpactSchema,
+  /** force 適用で 1 (spec §5.4)。 */
+  force: z.number().int(),
+  /** この提案を出したチャットメッセージ (カード紐付け)。 */
+  message_id: z.string().nullable(),
+  created_at: z.number(),
+  decided_at: z.number().nullable(),
+  applied_at: z.number().nullable(),
+});
+export type ChangeSet = z.infer<typeof ChangeSetSchema>;
+
+/** review_findings: 変更適用後レビューで記録された衝突・補足。 */
+export const ReviewFindingSchema = z.object({
+  id: z.string(),
+  change_set_id: z.string(),
+  /** conflict=新正典との衝突, info=補足。 */
+  kind: z.string().min(1),
+  severity: z.string().min(1),
+  summary: z.string(),
+  detail: z.string(),
+  scene_id: z.string().nullable(),
+  fact_id: z.string().nullable(),
+  status: z.enum(["open", "dismissed"]),
+  created_at: z.number(),
+});
+export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
+
+export const ChangeSetWithFindingsSchema = ChangeSetSchema.extend({
+  findings: z.array(ReviewFindingSchema),
+});
+export type ChangeSetWithFindings = z.infer<typeof ChangeSetWithFindingsSchema>;
+
+// --- API: internal (orchestrator CHANGESET マーカー / review_change ジョブ) ---
+
+/** POST /api/internal/works/:id/change-sets — 提案状態の変更セット作成+影響分析。 */
+export const CreateChangeSetRequestSchema = z.object({
+  title: z.string().min(1).max(500),
+  description: z.string().max(20000).default(""),
+  ops: z.array(ChangeSetOpSchema).min(1).max(100),
+  message_id: z.string().min(1).nullable().optional(),
+});
+export type CreateChangeSetRequest = z.infer<typeof CreateChangeSetRequestSchema>;
+
+export const ChangeSetResponseSchema = z.object({
+  change_set: ChangeSetWithFindingsSchema,
+});
+export type ChangeSetResponse = z.infer<typeof ChangeSetResponseSchema>;
+
+/** GET /api/internal/change-sets/:id/context — review_change の入力材料。 */
+export const ChangeSetContextResponseSchema = z.object({
+  change_set: ChangeSetWithFindingsSchema,
+  work: WorkSchema,
+  thread_id: z.string(),
+  /** 適用後の現行正典。 */
+  canon_facts: z.array(CanonFactSchema),
+  /** 影響対象シーン (最新リビジョン本文 + 最新契約)。 */
+  scenes: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      prose_md: z.string(),
+      contract: WritingContractPayloadSchema.nullable(),
+    }),
+  ),
+});
+export type ChangeSetContextResponse = z.infer<
+  typeof ChangeSetContextResponseSchema
+>;
+
+/** POST /api/internal/change-sets/:id/findings — review_change の記録。 */
+export const RecordReviewFindingsRequestSchema = z.object({
+  findings: z
+    .array(
+      z.object({
+        kind: z.string().min(1).max(50),
+        severity: z.string().min(1).max(20),
+        summary: z.string().min(1).max(500),
+        detail: z.string().max(20000).default(""),
+        scene_id: z.string().min(1).nullable().optional(),
+        fact_id: z.string().min(1).nullable().optional(),
+      }),
+    )
+    .max(500),
+});
+export type RecordReviewFindingsRequest = z.infer<
+  typeof RecordReviewFindingsRequestSchema
+>;
+
+export const RecordReviewFindingsResponseSchema = z.object({
+  findings: z.array(ReviewFindingSchema),
+  /** 実際に追加された件数 (重複スキップ後)。 */
+  added: z.number().int(),
+});
+export type RecordReviewFindingsResponse = z.infer<
+  typeof RecordReviewFindingsResponseSchema
+>;
+
+// --- API: ユーザー向け ---
+
+/** POST /api/change-sets/:id/approve — {force:true} で force_override 昇格。 */
+export const ApproveChangeSetRequestSchema = z.object({
+  force: z.boolean().optional(),
+});
+export type ApproveChangeSetRequest = z.infer<
+  typeof ApproveChangeSetRequestSchema
+>;
+
+export const ApproveChangeSetResponseSchema = z.object({
+  change_set: ChangeSetWithFindingsSchema,
+  /** 起票した review_change ジョブ (キー未設定などで起票なしは null)。 */
+  job: AgentJobSchema.nullable(),
+});
+export type ApproveChangeSetResponse = z.infer<
+  typeof ApproveChangeSetResponseSchema
+>;
+
+/** GET /api/works/:id/changes — 変更タブ用の一式。 */
+export const WorkChangesResponseSchema = z.object({
+  change_sets: z.array(ChangeSetWithFindingsSchema),
+});
+export type WorkChangesResponse = z.infer<typeof WorkChangesResponseSchema>;
+
+/** POST /api/review-findings/:id/status — open/dismissed 切替。 */
+export const SetFindingStatusRequestSchema = z.object({
+  status: z.enum(["open", "dismissed"]),
+});
+export type SetFindingStatusRequest = z.infer<
+  typeof SetFindingStatusRequestSchema
+>;
+
+export const ReviewFindingResponseSchema = z.object({
+  finding: ReviewFindingSchema,
+});
+export type ReviewFindingResponse = z.infer<typeof ReviewFindingResponseSchema>;
+
+// --- review_change ジョブ ---
+
+export const ReviewChangeCheckpointSchema = z.object({
+  /** scene_id -> critic 出力 (途中再開用)。 */
+  reviews: z.record(z.unknown()).optional(),
+  findings_recorded: z.boolean().optional(),
+  message_id: z.string().optional(),
+});
+export type ReviewChangeCheckpoint = z.infer<
+  typeof ReviewChangeCheckpointSchema
+>;
+
+export const ReviewChangePayloadSchema = z.object({
+  change_set_id: z.string().min(1),
+  work_id: z.string().min(1),
+  user_ref: z.string().min(1),
+  key_ref: z.string().min(1),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  checkpoint: ReviewChangeCheckpointSchema.optional(),
+});
+export type ReviewChangePayload = z.infer<typeof ReviewChangePayloadSchema>;
+
+export const ReviewChangeResultSchema = z.object({
+  kind: z.literal(JOB_KIND_REVIEW_CHANGE),
+  change_set_id: z.string(),
+  scenes_reviewed: z.number().int(),
+  findings_count: z.number().int(),
+});
+export type ReviewChangeResult = z.infer<typeof ReviewChangeResultSchema>;

@@ -1,10 +1,12 @@
 import {
   AddCanonFactsRequestSchema,
   AppendMessageRequestSchema,
+  ApproveChangeSetRequestSchema,
   ApprovePlanProposalResponseSchema,
   ApproveProposalResponseSchema,
   ApproveWorkspaceWriteResponseSchema,
   CompleteRequestSchema,
+  CreateChangeSetRequestSchema,
   CreateJobRequestSchema,
   CreateKeyRequestSchema,
   CreateMessageRequestSchema,
@@ -16,6 +18,7 @@ import {
   HeartbeatRequestSchema,
   JOB_KIND_GENERATE_SCENE,
   JOB_KIND_ORCHESTRATOR_TURN,
+  JOB_KIND_REVIEW_CHANGE,
   LeaseRequestSchema,
   PersistRevisionRequestSchema,
   PlanProposalPayloadSchema,
@@ -24,8 +27,10 @@ import {
   PROPOSAL_KIND_WORKSPACE_WRITE,
   PROPOSAL_KIND_WRITING_CONTRACT,
   RecordDependenciesRequestSchema,
+  RecordReviewFindingsRequestSchema,
   ResolveKeyRequestSchema,
   RewriteSceneRequestSchema,
+  SetFindingStatusRequestSchema,
   tiptapDocToText,
   WorkPatchRequestSchema,
   WorkSettingsRequestSchema,
@@ -44,9 +49,13 @@ import {
 import {
   addCanonFacts as repoAddCanonFacts,
   addDependencyEdges,
+  addReviewFindings,
   appendMessage,
   appendProgress,
+  applyChangeSet,
   completeJob,
+  computeChangeSetImpact,
+  createChangeSet,
   createEpisode,
   createJob,
   createKey,
@@ -58,6 +67,8 @@ import {
   deleteKey,
   failJob,
   findEpisodeByTitle,
+  getChangeSetById,
+  getChangeSetWithFindings,
   getContractById,
   getEpisodeById,
   getJob,
@@ -65,6 +76,7 @@ import {
   getLatestContractByScene,
   getLatestEpisode,
   getProposalById,
+  getReviewFindingById,
   getSceneById,
   getThreadById,
   getThreadByWorkId,
@@ -73,6 +85,7 @@ import {
   heartbeat,
   leaseNextJob,
   listCanonFactsByWork,
+  listChangeSetsByWork,
   listContractsByWork,
   listEpisodesByWork,
   listKeysByOwner,
@@ -84,8 +97,11 @@ import {
   listRevisionsByWork,
   listScenesByWork,
   listWorksByOwner,
+  manualEditImpact,
   patchWork,
   RepoError,
+  setReviewFindingStatus,
+  updateChangeSetState,
   updateContractStatus,
   updateProposalStatus,
   updateSceneStatus,
@@ -229,6 +245,46 @@ export function createApp(deps: WebDeps): FetchHandler {
   };
 
   /**
+   * review_change ジョブをキューする (Phase 2b)。
+   * 変更セット適用/手編集の直後に自動起票し、影響シーンと新正典を
+   * critic で検査させる。キー未登録なら null (起票しない)。
+   */
+  const enqueueReviewChange = async (input: {
+    work: {
+      id: string;
+      owner_ref: string;
+      key_ref: string | null;
+      model: string | null;
+    };
+    changeSetId: string;
+  }) => {
+    const keys = await listKeysByOwner(db, input.work.owner_ref);
+    const workKey = input.work.key_ref
+      ? await getKeyById(db, input.work.key_ref)
+      : undefined;
+    const key =
+      workKey && workKey.owner_ref === input.work.owner_ref
+        ? workKey
+        : keys.at(-1);
+    if (!key) return null;
+    const { job } = await createJob(db, {
+      kind: JOB_KIND_REVIEW_CHANGE,
+      workRef: input.work.id,
+      userRef: input.work.owner_ref,
+      payload: {
+        change_set_id: input.changeSetId,
+        work_id: input.work.id,
+        user_ref: input.work.owner_ref,
+        key_ref: key.id,
+        provider: key.provider,
+        model: input.work.model ?? deps.defaultModel,
+      },
+      idempotencyKey: `review_change:${input.changeSetId}`,
+    });
+    return job;
+  };
+
+  /**
    * dev-login: 固定開発ユーザーでセッションを発行する。
    * better-auth の emailAndPassword 経路 (DEV_LOGIN_ENABLED 時のみ有効化) に
    * 内部転送し、返ってきた Set-Cookie をそのまま利用者に渡す。
@@ -298,7 +354,9 @@ export function createApp(deps: WebDeps): FetchHandler {
         pathname === "/api/keys" ||
         pathname.startsWith("/api/keys/") ||
         pathname.startsWith("/api/proposals/") ||
-        pathname.startsWith("/api/scenes/");
+        pathname.startsWith("/api/scenes/") ||
+        pathname.startsWith("/api/change-sets/") ||
+        pathname.startsWith("/api/review-findings/");
       if (userScoped) {
         const user = await sessionUser(request);
         if (!user) return err(401, "unauthorized", "ログインが必要です");
@@ -365,12 +423,14 @@ export function createApp(deps: WebDeps): FetchHandler {
           const messages = await listMessages(db, thread.id);
           const openJobs = await listOpenJobsByWork(db, work.id);
           const proposals = await listProposalsByWork(db, work.id);
+          const changeSets = await listChangeSetsByWork(db, work.id);
           const active = openJobs[0] ?? null;
           return json({
             work,
             thread,
             messages,
             proposals,
+            change_sets: changeSets,
             active_job: active
               ? {
                   job: publicJob(active),
@@ -815,6 +875,22 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (!work || work.owner_ref !== user.id) {
             return err(404, "not_found", "not found");
           }
+          // 手編集 = kind="manual_edit" の変更セットを自動生成し、
+          // このリビジョンに紐付ける (spec §5.5)
+          const manualChangeSet = await createChangeSet(db, {
+            workId: work.id,
+            kind: "manual_edit",
+            title: `本文の手編集: ${scene.title}`,
+            description: "作者による本文の手編集",
+            ops: [],
+            status: "applied",
+            impact: manualEditImpact({
+              sceneId: scene.id,
+              sceneTitle: scene.title,
+            }),
+            decidedAt: Date.now(),
+            appliedAt: Date.now(),
+          });
           const revision = await createSceneRevision(db, {
             sceneId: scene.id,
             contentJson: {
@@ -830,8 +906,157 @@ export function createApp(deps: WebDeps): FetchHandler {
                 })),
             },
             source: "manual_edit",
+            changeSetId: manualChangeSet.id,
           });
-          return json({ revision }, 201);
+          // 手編集のバックグラウンドレビューを起票 (spec §5.5)
+          await enqueueReviewChange({
+            work,
+            changeSetId: manualChangeSet.id,
+          });
+          return json({ revision, change_set: manualChangeSet }, 201);
+        }
+
+        // GET /api/works/:id/changes — 変更タブ用の変更セット+findings
+        const workChanges = pathname.match(
+          /^\/api\/works\/([^/]+)\/changes$/,
+        );
+        if (method === "GET" && workChanges) {
+          const work = await getWorkById(db, workChanges[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const changeSets = await listChangeSetsByWork(db, work.id);
+          return json({ change_sets: changeSets });
+        }
+
+        // POST /api/change-sets/:id/(approve|reject) — 変更セットの決定
+        // approve は {force:true} で force_override 昇格 (却下済みも強制可)。
+        const csAction = pathname.match(
+          /^\/api\/change-sets\/([^/]+)\/(approve|reject)$/,
+        );
+        if (method === "POST" && csAction) {
+          const [, changeSetId, action] = csAction as unknown as [
+            string,
+            string,
+            string,
+          ];
+          const cs = await getChangeSetById(db, changeSetId);
+          if (!cs) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, cs.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const thread = await getThreadByWorkId(db, work.id);
+
+          if (action === "reject") {
+            if (cs.status !== "proposed") {
+              return err(
+                400,
+                "bad_request",
+                "この変更セットはすでに決定済みです",
+              );
+            }
+            const updated = await updateChangeSetState(db, {
+              id: cs.id,
+              status: "rejected",
+              decidedAt: Date.now(),
+            });
+            if (thread) {
+              await appendMessage(db, {
+                threadId: thread.id,
+                role: "assistant",
+                content:
+                  `変更セット「${cs.title}」を却下しました。` +
+                  "どこを変えますか? 対話で指示をもらえれば、提案を修正できます。",
+              });
+            }
+            const withFindings = await getChangeSetWithFindings(db, cs.id);
+            return json({ change_set: withFindings ?? updated });
+          }
+
+          // approve (body は省略可。{force:true} で強制適用)
+          let force = false;
+          const rawBody = await request.text();
+          if (rawBody.trim().length > 0) {
+            const parsed = ApproveChangeSetRequestSchema.safeParse(
+              JSON.parse(rawBody),
+            );
+            if (!parsed.success) {
+              return err(400, "bad_request", "invalid request body");
+            }
+            force = parsed.data.force === true;
+          }
+          if (cs.status === "applied") {
+            // 冪等: 適用済みは現状を返す
+            const withFindings = await getChangeSetWithFindings(db, cs.id);
+            return json({ change_set: withFindings, job: null });
+          }
+          if (cs.status === "rejected" && !force) {
+            return err(
+              400,
+              "bad_request",
+              "却下済みの変更セットです。適用するには「強制的に変更」を使ってください",
+            );
+          }
+          if (cs.status !== "proposed" && cs.status !== "rejected") {
+            return err(
+              400,
+              "bad_request",
+              "この変更セットはすでに決定済みです",
+            );
+          }
+
+          const applied = await applyChangeSet(db, {
+            changeSetId: cs.id,
+            force,
+          });
+          if (!applied) {
+            return err(500, "internal", "failed to apply change set");
+          }
+          // レビュー処理 review_change を自動起票 (キー未登録なら起票なし)
+          const job = await enqueueReviewChange({
+            work,
+            changeSetId: cs.id,
+          });
+          if (thread) {
+            const forceNote = force ? " (強制適用)" : "";
+            await appendMessage(db, {
+              threadId: thread.id,
+              role: "assistant",
+              content:
+                `変更セット「${cs.title}」を適用しました${forceNote}。` +
+                `正典リビジョンは rev${applied.newCanonRev} です。` +
+                (job
+                  ? "影響するシーンのレビューを開始します。"
+                  : "APIキー未登録のためレビューは起票されませんでした。"),
+            });
+          }
+          return json({
+            change_set: applied.changeSet,
+            job: job ? publicJob(job) : null,
+          });
+        }
+
+        // POST /api/review-findings/:id/status — findings の open/dismissed 切替
+        const findingStatus = pathname.match(
+          /^\/api\/review-findings\/([^/]+)\/status$/,
+        );
+        if (method === "POST" && findingStatus) {
+          const body = await parseBody(request, SetFindingStatusRequestSchema);
+          if (body instanceof Response) return body;
+          const finding = await getReviewFindingById(db, findingStatus[1]!);
+          if (!finding) return err(404, "not_found", "not found");
+          const cs = await getChangeSetById(db, finding.change_set_id);
+          if (!cs) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, cs.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const updated = await setReviewFindingStatus(db, {
+            id: finding.id,
+            status: body.status,
+          });
+          return json({ finding: updated });
         }
 
         return err(404, "not_found", "not found");
@@ -1220,6 +1445,94 @@ export function createApp(deps: WebDeps): FetchHandler {
           await updateSceneStatus(db, { id: scene.id, status: "generated" });
         }
         return json({ revision });
+      }
+
+      // POST /api/internal/works/:id/change-sets — <<CHANGESET>> の提案作成。
+      // 影響分析はここで決定的に計算して impact に保存し、status=proposed で
+      // 返す (message_id つきはユニーク制約で冪等)。
+      const internalCsPath = pathname.match(
+        /^\/api\/internal\/works\/([^/]+)\/change-sets$/,
+      );
+      if (method === "POST" && internalCsPath) {
+        const body = await parseBody(request, CreateChangeSetRequestSchema);
+        if (body instanceof Response) return body;
+        const work = await getWorkById(db, internalCsPath[1]!);
+        if (!work) return err(404, "not_found", "work not found");
+        const impact = await computeChangeSetImpact(db, {
+          workId: work.id,
+          ops: body.ops,
+        });
+        const cs = await createChangeSet(db, {
+          workId: work.id,
+          title: body.title,
+          description: body.description,
+          ops: body.ops,
+          impact,
+          messageId: body.message_id ?? null,
+        });
+        const withFindings = await getChangeSetWithFindings(db, cs.id);
+        return json({ change_set: withFindings ?? cs }, 201);
+      }
+
+      // GET /api/internal/change-sets/:id/context — review_change の入力材料
+      const csCtxPath = pathname.match(
+        /^\/api\/internal\/change-sets\/([^/]+)\/context$/,
+      );
+      if (method === "GET" && csCtxPath) {
+        const cs = await getChangeSetWithFindings(db, csCtxPath[1]!);
+        if (!cs) return err(404, "not_found", "not found");
+        const work = await getWorkById(db, cs.work_id);
+        if (!work) return err(404, "not_found", "work not found");
+        const thread = await getThreadByWorkId(db, work.id);
+        if (!thread) return err(404, "not_found", "thread not found");
+        const canonFacts = await listCanonFactsByWork(db, work.id);
+        const scenes = [];
+        for (const s of cs.impact.scenes) {
+          const scene = await getSceneById(db, s.id);
+          if (!scene) continue;
+          const revs = await listRevisionsByScene(db, scene.id);
+          const latest = revs.at(-1);
+          const contract = await getLatestContractByScene(db, scene.id);
+          scenes.push({
+            id: scene.id,
+            title: scene.title,
+            prose_md: latest ? tiptapDocToText(latest.content_json) : "",
+            contract: contract ? contract.payload : null,
+          });
+        }
+        return json({
+          change_set: cs,
+          work,
+          thread_id: thread.id,
+          canon_facts: canonFacts,
+          scenes,
+        });
+      }
+
+      // POST /api/internal/change-sets/:id/findings — review_change の記録
+      const csFindingsPath = pathname.match(
+        /^\/api\/internal\/change-sets\/([^/]+)\/findings$/,
+      );
+      if (method === "POST" && csFindingsPath) {
+        const body = await parseBody(
+          request,
+          RecordReviewFindingsRequestSchema,
+        );
+        if (body instanceof Response) return body;
+        const cs = await getChangeSetById(db, csFindingsPath[1]!);
+        if (!cs) return err(404, "not_found", "not found");
+        const { findings, added } = await addReviewFindings(db, {
+          changeSetId: cs.id,
+          findings: body.findings.map((f) => ({
+            kind: f.kind,
+            severity: f.severity,
+            summary: f.summary,
+            detail: f.detail,
+            sceneId: f.scene_id ?? null,
+            factId: f.fact_id ?? null,
+          })),
+        });
+        return json({ findings, added });
       }
 
       return err(404, "not_found", "not found");

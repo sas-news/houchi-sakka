@@ -27,6 +27,7 @@ export interface WorkInfo {
   provider: string | null;
   model: string | null;
   key_ref: string | null;
+  canon_rev: number;
   created_at: number;
   updated_at: number;
 }
@@ -114,6 +115,7 @@ export interface SceneRevisionInfo {
   content_json: unknown;
   source: "ai" | "manual_edit";
   job_id: string | null;
+  change_set_id: string | null;
   created_at: number;
 }
 
@@ -139,11 +141,60 @@ export interface CanonFactInfo {
   created_at: number;
 }
 
+export interface ChangeSetOp {
+  op: "retire_fact" | "revise_fact" | "add_fact" | "update_work";
+  fact_id?: string;
+  new_statement?: string;
+  statement?: string;
+  patch?: Partial<Pick<WorkInfo, "title" | "premise" | "genre">>;
+}
+
+export interface ChangeSetImpact {
+  scenes: { id: string; title: string; reason: string }[];
+  facts: { id: string; statement: string; reason: string }[];
+  contracts: { id: string; scene_id: string; reason: string }[];
+  summary: string;
+}
+
+export interface ReviewFindingInfo {
+  id: string;
+  change_set_id: string;
+  kind: "conflict" | "info";
+  severity: "low" | "medium" | "high";
+  summary: string;
+  detail: string;
+  scene_id: string | null;
+  fact_id: string | null;
+  status: "open" | "dismissed";
+  created_at: number;
+}
+
+export interface ChangeSetInfo {
+  id: string;
+  work_id: string;
+  thread_id: string | null;
+  /** <<CHANGESET>> を出した assistant メッセージ (提案カードの紐付け)。 */
+  message_id: string | null;
+  kind: "normal" | "manual_edit" | "force_override";
+  title: string;
+  description: string;
+  ops: ChangeSetOp[];
+  status: "proposed" | "approved" | "rejected" | "applied";
+  impact: ChangeSetImpact;
+  /** 強制適用なら 1 (DB INTEGER)。 */
+  force: number;
+  findings: ReviewFindingInfo[];
+  created_at: number;
+  decided_at: number | null;
+  applied_at: number | null;
+}
+
 export interface WorkDetail {
   work: WorkInfo;
   thread: { id: string; work_id: string };
   messages: ChatMessageInfo[];
   proposals: ProposalInfo[];
+  change_sets: ChangeSetInfo[];
   active_job: { job: JobInfo; progress: ProgressEventInfo[] } | null;
   queued_jobs: number;
 }

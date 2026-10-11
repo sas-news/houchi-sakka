@@ -45,7 +45,10 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     const input = buildOrchestratorInput({
       work: threadCtx.work,
       messages: threadCtx.messages,
-      canonFacts: threadCtx.canon_facts.map((f) => f.statement),
+      canonFacts: threadCtx.canon_facts.map((f) => ({
+        id: f.id,
+        statement: f.statement,
+      })),
       pendingProposals: threadCtx.proposals
         .filter((p) => p.status === "pending")
         .map((p) => JSON.stringify(p.payload)),
@@ -77,7 +80,7 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     await ctx.postProgress("status", { step: "resume_from_checkpoint" });
   }
 
-  const { cleanText, patch, proposal, canonFacts, runPlan } =
+  const { cleanText, patch, proposal, canonFacts, runPlan, changeSet } =
     parseOrchestratorMarkers(providerResult.output_text);
   let assistantMessageId = checkpoint.assistant_message_id;
 
@@ -128,6 +131,20 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
           scene_purpose: proposal.scenePurpose,
           contract: proposal.contract,
         },
+      });
+    }
+    // <<CHANGESET>>: 変更セットを提案状態で作成 (影響分析はサーバー側)
+    if (changeSet) {
+      if (!ctx.createChangeSet) {
+        throw new Error("orchestrator changeset persistence is not wired");
+      }
+      await ctx.postProgress("status", { step: "create_change_set" });
+      await ctx.createChangeSet({
+        work_id: payload.work_id,
+        title: changeSet.title,
+        description: changeSet.description,
+        ops: changeSet.ops,
+        message_id: assistantMessageId,
       });
     }
     // <<RUN_PLAN>>: plan_work ジョブを起票 (キー/プロバイダーはこの往復と同じ)

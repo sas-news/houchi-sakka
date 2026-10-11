@@ -2,6 +2,8 @@ import { sql, type SQLWrapper } from "drizzle-orm";
 import {
   AgentJobSchema,
   CanonFactSchema,
+  ChangeSetSchema,
+  ChangeSetWithFindingsSchema,
   ChatMessageSchema,
   ChatRoleSchema,
   ChatThreadSchema,
@@ -11,6 +13,7 @@ import {
   ProgressEventSchema,
   ProposalSchema,
   ProviderKeySchema,
+  ReviewFindingSchema,
   SceneRevisionSchema,
   SceneSchema,
   WorkSchema,
@@ -19,6 +22,10 @@ import {
   WritingContractSchema,
   type AgentJob,
   type CanonFact,
+  type ChangeSet,
+  type ChangeSetImpact,
+  type ChangeSetOp,
+  type ChangeSetWithFindings,
   type ChatMessage,
   type ChatRole,
   type ChatThread,
@@ -30,6 +37,7 @@ import {
   type ProgressEventType,
   type Proposal,
   type ProviderKey,
+  type ReviewFinding,
   type Scene,
   type SceneRevision,
   type Work,
@@ -125,6 +133,7 @@ function rowToWork(r: Row): Work {
     provider: r.provider ?? null,
     model: r.model ?? null,
     key_ref: r.key_ref ?? null,
+    canon_rev: r.canon_rev ?? 0,
     created_at: r.created_at,
     updated_at: r.updated_at,
   });
@@ -704,6 +713,7 @@ function rowToRevision(r: Row): SceneRevision {
     content_json: JSON.parse(String(r.content_json)),
     source: r.source,
     job_id: r.job_id ?? null,
+    change_set_id: r.change_set_id ?? null,
     created_at: r.created_at,
   });
 }
@@ -725,6 +735,8 @@ function rowToCanonFact(r: Row): CanonFact {
     work_id: r.work_id,
     statement: r.statement,
     provenance: r.provenance,
+    valid_from_rev: r.valid_from_rev ?? null,
+    valid_to_rev: r.valid_to_rev ?? null,
     created_at: r.created_at,
   });
 }
@@ -872,14 +884,15 @@ export async function createSceneRevision(
     contentJson: unknown;
     source: string;
     jobId?: string | null;
+    changeSetId?: string | null;
   },
 ): Promise<SceneRevision> {
   const rows = (await db.all(sql`
-    INSERT INTO scene_revisions (id, scene_id, rev_no, content_json, source, job_id, created_at)
+    INSERT INTO scene_revisions (id, scene_id, rev_no, content_json, source, job_id, change_set_id, created_at)
     VALUES (${crypto.randomUUID()}, ${input.sceneId},
             (SELECT COALESCE(MAX(rev_no), 0) + 1 FROM scene_revisions WHERE scene_id = ${input.sceneId}),
             ${JSON.stringify(input.contentJson)}, ${input.source},
-            ${input.jobId ?? null}, ${now()})
+            ${input.jobId ?? null}, ${input.changeSetId ?? null}, ${now()})
     RETURNING *
   `)) as Row[];
   return rowToRevision(rows[0]!);
@@ -989,7 +1002,21 @@ export async function addCanonFacts(
   return { canonFacts: await listCanonFactsByWork(db, input.workId), added };
 }
 
+/** 現行の正典メモのみ (valid_to_rev IS NULL, spec §6.3)。 */
 export async function listCanonFactsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<CanonFact[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM canon_facts WHERE work_id = ${workId}
+        AND valid_to_rev IS NULL
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToCanonFact);
+}
+
+/** 全履歴行 (現行+閉じた) — /canon/history.md と影響分析用。 */
+export async function listAllCanonFactsByWork(
   db: DbLike,
   workId: string,
 ): Promise<CanonFact[]> {
@@ -998,6 +1025,16 @@ export async function listCanonFactsByWork(
         ORDER BY created_at ASC, id ASC`,
   )) as Row[];
   return rows.map(rowToCanonFact);
+}
+
+export async function getCanonFactById(
+  db: DbLike,
+  id: string,
+): Promise<CanonFact | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM canon_facts WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToCanonFact(r) : null;
 }
 
 /** 提案の作成 (message_id+kind のユニーク制約で冪等)。 */
@@ -1144,4 +1181,496 @@ export async function listDependencyEdgesByWork(
         ORDER BY created_at ASC, id ASC`,
   )) as Row[];
   return rows.map(rowToDependencyEdge);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2b: 変更セット + 影響分析 + 正典リビジョン (spec §5, §5.5, §6.3, §3)
+// ---------------------------------------------------------------------------
+
+function rowToChangeSet(r: Row): ChangeSet {
+  return ChangeSetSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    kind: r.kind,
+    title: r.title,
+    description: r.description,
+    ops: JSON.parse(String(r.ops)),
+    status: r.status,
+    impact: JSON.parse(String(r.impact)),
+    force: r.force ?? 0,
+    message_id: r.message_id ?? null,
+    created_at: r.created_at,
+    decided_at: r.decided_at ?? null,
+    applied_at: r.applied_at ?? null,
+  });
+}
+
+function rowToReviewFinding(r: Row): ReviewFinding {
+  return ReviewFindingSchema.parse({
+    id: r.id,
+    change_set_id: r.change_set_id,
+    kind: r.kind,
+    severity: r.severity,
+    summary: r.summary,
+    detail: r.detail,
+    scene_id: r.scene_id ?? null,
+    fact_id: r.fact_id ?? null,
+    status: r.status,
+    created_at: r.created_at,
+  });
+}
+
+/**
+ * 変更セットの作成。message_id つきはユニーク制約で冪等
+ * (orchestrator ジョブの再開で同じ提案を2重に作らない)。
+ */
+export async function createChangeSet(
+  db: DbLike,
+  input: {
+    workId: string;
+    kind?: string;
+    title: string;
+    description?: string;
+    ops: ChangeSetOp[];
+    status?: string;
+    impact: ChangeSetImpact;
+    force?: number;
+    messageId?: string | null;
+    decidedAt?: number | null;
+    appliedAt?: number | null;
+  },
+): Promise<ChangeSet> {
+  const id = crypto.randomUUID();
+  const rows = (await db.all(sql`
+    INSERT INTO change_sets
+      (id, work_id, kind, title, description, ops, status, impact, force,
+       message_id, created_at, decided_at, applied_at)
+    VALUES (${id}, ${input.workId}, ${input.kind ?? "normal"},
+            ${input.title}, ${input.description ?? ""},
+            ${JSON.stringify(input.ops)}, ${input.status ?? "proposed"},
+            ${JSON.stringify(input.impact)}, ${input.force ?? 0},
+            ${input.messageId ?? null}, ${now()},
+            ${input.decidedAt ?? null}, ${input.appliedAt ?? null})
+    ON CONFLICT DO NOTHING
+    RETURNING *
+  `)) as Row[];
+  if (rows.length > 0) return rowToChangeSet(rows[0]!);
+  // 同じ message_id の既存行 (冪等ヒット) を返す
+  if (input.messageId) {
+    const r = (await db.get(
+      sql`SELECT * FROM change_sets WHERE message_id = ${input.messageId}`,
+    )) as Row | undefined;
+    if (r) return rowToChangeSet(r);
+  }
+  throw new RepoError("internal", "createChangeSet: insert failed");
+}
+
+export async function getChangeSetById(
+  db: DbLike,
+  id: string,
+): Promise<ChangeSet | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM change_sets WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToChangeSet(r) : null;
+}
+
+export async function listFindingsByChangeSet(
+  db: DbLike,
+  changeSetId: string,
+): Promise<ReviewFinding[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM review_findings WHERE change_set_id = ${changeSetId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToReviewFinding);
+}
+
+export async function getChangeSetWithFindings(
+  db: DbLike,
+  id: string,
+): Promise<ChangeSetWithFindings | null> {
+  const cs = await getChangeSetById(db, id);
+  if (!cs) return null;
+  const findings = await listFindingsByChangeSet(db, id);
+  return ChangeSetWithFindingsSchema.parse({ ...cs, findings });
+}
+
+export async function listChangeSetsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<ChangeSetWithFindings[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM change_sets WHERE work_id = ${workId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  const out: ChangeSetWithFindings[] = [];
+  for (const r of rows) {
+    const cs = rowToChangeSet(r);
+    const findings = await listFindingsByChangeSet(db, cs.id);
+    out.push(ChangeSetWithFindingsSchema.parse({ ...cs, findings }));
+  }
+  return out;
+}
+
+/** 変更セットの状態/属性を更新 (propose→applied/rejected、force 昇格)。 */
+export async function updateChangeSetState(
+  db: DbLike,
+  input: {
+    id: string;
+    status?: string;
+    kind?: string;
+    force?: number;
+    decidedAt?: number | null;
+    appliedAt?: number | null;
+  },
+): Promise<ChangeSet | null> {
+  const cur = await getChangeSetById(db, input.id);
+  if (!cur) return null;
+  const rows = (await db.all(sql`
+    UPDATE change_sets SET
+      status = ${input.status ?? cur.status},
+      kind = ${input.kind ?? cur.kind},
+      force = ${input.force ?? cur.force},
+      decided_at = ${input.decidedAt === undefined ? cur.decided_at : input.decidedAt},
+      applied_at = ${input.appliedAt === undefined ? cur.applied_at : input.appliedAt}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToChangeSet(rows[0]!) : null;
+}
+
+/** review_findings の記録 (change_set+kind+summary+scene_id で重複スキップ)。 */
+export async function addReviewFindings(
+  db: DbLike,
+  input: {
+    changeSetId: string;
+    findings: {
+      kind: string;
+      severity: string;
+      summary: string;
+      detail?: string;
+      sceneId?: string | null;
+      factId?: string | null;
+    }[];
+  },
+): Promise<{ findings: ReviewFinding[]; added: number }> {
+  const existing = await listFindingsByChangeSet(db, input.changeSetId);
+  const seen = new Set(
+    existing.map(
+      (f) => `${f.kind}${f.summary}${f.scene_id ?? ""}${f.fact_id ?? ""}`,
+    ),
+  );
+  let added = 0;
+  for (const f of input.findings) {
+    const key = `${f.kind}${f.summary}${f.sceneId ?? ""}${f.factId ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rows = (await db.all(sql`
+      INSERT INTO review_findings
+        (id, change_set_id, kind, severity, summary, detail, scene_id, fact_id, status, created_at)
+      VALUES (${crypto.randomUUID()}, ${input.changeSetId}, ${f.kind},
+              ${f.severity}, ${f.summary}, ${f.detail ?? ""},
+              ${f.sceneId ?? null}, ${f.factId ?? null}, 'open', ${now()})
+      RETURNING *
+    `)) as Row[];
+    added += rows.length;
+  }
+  return {
+    findings: await listFindingsByChangeSet(db, input.changeSetId),
+    added,
+  };
+}
+
+export async function setReviewFindingStatus(
+  db: DbLike,
+  input: { id: string; status: string },
+): Promise<ReviewFinding | null> {
+  const rows = (await db.all(sql`
+    UPDATE review_findings SET status = ${input.status}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToReviewFinding(rows[0]!) : null;
+}
+
+export async function getReviewFindingById(
+  db: DbLike,
+  id: string,
+): Promise<ReviewFinding | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM review_findings WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToReviewFinding(r) : null;
+}
+
+// --- 影響分析 (決定的 MVP, spec §3) ---
+
+/** 文面の正規化 (Unicode正規化 + 空白/記号除去 + 小文字化)。 */
+function normalizeStatement(s: string): string {
+  return s
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s　]+/g, "")
+    .replace(/[、。・「」『』!?.,・…—\-~〜]/g, "");
+}
+
+/** 高一致の簡易検査: 完全一致 または 相互の部分一致 (4文字以上のみ)。 */
+function statementsMatch(a: string, b: string): boolean {
+  const x = normalizeStatement(a);
+  const y = normalizeStatement(b);
+  if (x.length === 0 || y.length === 0) return false;
+  if (x === y) return true;
+  if (x.length >= 4 && y.length >= 4) return x.includes(y) || y.includes(x);
+  return false;
+}
+
+/**
+ * ops から影響対象を決定的に列挙する (spec §3 の MVP 版)。
+ * - 変更/廃止する fact に依存宣言で繋がる scenes
+ * - その fact の statement と高一致する他の現行 canon_facts
+ * - 影響シーンの最新 contracts
+ */
+export async function computeChangeSetImpact(
+  db: DbLike,
+  input: { workId: string; ops: ChangeSetOp[] },
+): Promise<ChangeSetImpact> {
+  const scenes = new Map<string, { id: string; title: string; reason: string }>();
+  const facts = new Map<
+    string,
+    { id: string; statement: string; reason: string }
+  >();
+  const contracts = new Map<
+    string,
+    { id: string; scene_id: string; reason: string }
+  >();
+
+  const edges = await listDependencyEdgesByWork(db, input.workId);
+  const currentFacts = await listCanonFactsByWork(db, input.workId);
+
+  const linkContractsForScene = async (sceneId: string) => {
+    const contract = await getLatestContractByScene(db, sceneId);
+    if (contract && !contracts.has(contract.id)) {
+      contracts.set(contract.id, {
+        id: contract.id,
+        scene_id: contract.scene_id,
+        reason: "影響シーンの契約",
+      });
+    }
+  };
+
+  for (const op of input.ops) {
+    if (op.op === "retire_fact" || op.op === "revise_fact") {
+      const fact = await getCanonFactById(db, op.fact_id);
+      if (!fact) continue;
+      // 依存宣言で繋がる scenes
+      for (const edge of edges) {
+        if (edge.target_kind !== "canon_fact") continue;
+        if (
+          edge.target_ref === fact.id ||
+          statementsMatch(edge.target_ref, fact.statement)
+        ) {
+          if (!scenes.has(edge.scene_id)) {
+            const scene = await getSceneById(db, edge.scene_id);
+            scenes.set(edge.scene_id, {
+              id: edge.scene_id,
+              title: scene?.title ?? "(不明なシーン)",
+              reason: `依存宣言「${edge.target_ref}」`,
+            });
+          }
+        }
+      }
+      // 文面が近い他の現行正典
+      for (const other of currentFacts) {
+        if (other.id === fact.id) continue;
+        if (statementsMatch(other.statement, fact.statement)) {
+          facts.set(other.id, {
+            id: other.id,
+            statement: other.statement,
+            reason: "変更対象の正典と文面が近い",
+          });
+        }
+      }
+      // revise: 新しい文面とも一致する既存正典を拾う
+      if (op.op === "revise_fact") {
+        for (const other of currentFacts) {
+          if (other.id === fact.id) continue;
+          if (statementsMatch(other.statement, op.new_statement)) {
+            facts.set(other.id, {
+              id: other.id,
+              statement: other.statement,
+              reason: "新しい文面と近い既存の正典",
+            });
+          }
+        }
+      }
+    } else if (op.op === "add_fact") {
+      for (const other of currentFacts) {
+        if (statementsMatch(other.statement, op.statement)) {
+          facts.set(other.id, {
+            id: other.id,
+            statement: other.statement,
+            reason: "追加予定の文面と近い既存の正典",
+          });
+        }
+      }
+    }
+    // update_work: 構造情報の変更は個別シーンへの影響を列挙しない
+  }
+
+  for (const sceneId of scenes.keys()) {
+    await linkContractsForScene(sceneId);
+  }
+
+  const parts: string[] = [];
+  if (scenes.size > 0) parts.push(`シーン ${scenes.size} 件`);
+  if (facts.size > 0) parts.push(`正典 ${facts.size} 件`);
+  if (contracts.size > 0) parts.push(`契約 ${contracts.size} 件`);
+  const summary =
+    parts.length > 0
+      ? `${parts.join("・")}に影響する可能性`
+      : "影響対象は見つかりませんでした";
+
+  return {
+    scenes: [...scenes.values()],
+    facts: [...facts.values()],
+    contracts: [...contracts.values()],
+    summary,
+  };
+}
+
+/** 手編集リビジョン用の変更セット impact (spec §5.5)。 */
+export function manualEditImpact(input: {
+  sceneId: string;
+  sceneTitle: string;
+}): ChangeSetImpact {
+  return {
+    scenes: [
+      {
+        id: input.sceneId,
+        title: input.sceneTitle,
+        reason: "手編集の対象シーン",
+      },
+    ],
+    facts: [],
+    contracts: [],
+    summary: "手編集による本文の変更",
+  };
+}
+
+// --- ops 適用 (spec §5.3) ---
+
+async function closeCanonFact(
+  db: DbLike,
+  input: { factId: string; validToRev: number },
+): Promise<boolean> {
+  const rows = (await db.all(sql`
+    UPDATE canon_facts SET valid_to_rev = ${input.validToRev}
+    WHERE id = ${input.factId} AND valid_to_rev IS NULL
+    RETURNING id
+  `)) as Row[];
+  return rows.length > 0;
+}
+
+async function insertCanonFactRev(
+  db: DbLike,
+  input: {
+    workId: string;
+    statement: string;
+    provenance: string;
+    validFromRev: number;
+  },
+): Promise<void> {
+  await db.all(sql`
+    INSERT INTO canon_facts
+      (id, work_id, statement, provenance, valid_from_rev, valid_to_rev, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.statement},
+            ${input.provenance}, ${input.validFromRev}, NULL, ${now()})
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `);
+}
+
+/**
+ * 変更セットの ops を適用し、works.canon_rev を +1 する (spec §5.3)。
+ * - retire_fact: valid_to_rev を新 rev に設定して閉じる
+ * - revise_fact: 旧行を閉じ、新行を valid_from_rev=新 rev で挿入
+ * - add_fact: 新行を挿入
+ * - update_work: works の構造情報をパッチ
+ * force=true のとき kind=force_override に昇格する (spec §5.4)。
+ * 適用済みの変更セットは冪等に現状を返す。
+ */
+export async function applyChangeSet(
+  db: DbLike,
+  input: { changeSetId: string; force?: boolean },
+): Promise<{ changeSet: ChangeSetWithFindings; newCanonRev: number } | null> {
+  const cs = await getChangeSetById(db, input.changeSetId);
+  if (!cs) return null;
+  if (cs.status === "applied") {
+    const work = await getWorkById(db, cs.work_id);
+    const withFindings = await getChangeSetWithFindings(db, cs.id);
+    if (!withFindings) return null;
+    return { changeSet: withFindings, newCanonRev: work?.canon_rev ?? 0 };
+  }
+
+  const work = await getWorkById(db, cs.work_id);
+  if (!work) return null;
+  const newRev = work.canon_rev + 1;
+  const provenance = `change_set:${cs.id}`;
+
+  for (const op of cs.ops) {
+    if (op.op === "retire_fact") {
+      await closeCanonFact(db, { factId: op.fact_id, validToRev: newRev });
+    } else if (op.op === "revise_fact") {
+      const closed = await closeCanonFact(db, {
+        factId: op.fact_id,
+        validToRev: newRev,
+      });
+      if (closed) {
+        await insertCanonFactRev(db, {
+          workId: cs.work_id,
+          statement: op.new_statement,
+          provenance,
+          validFromRev: newRev,
+        });
+      }
+    } else if (op.op === "add_fact") {
+      await insertCanonFactRev(db, {
+        workId: cs.work_id,
+        statement: op.statement,
+        provenance,
+        validFromRev: newRev,
+      });
+    } else if (op.op === "update_work") {
+      const p = op.patch;
+      await patchWork(db, {
+        id: cs.work_id,
+        ...(p.title !== undefined ? { title: p.title } : {}),
+        ...(p.premise !== undefined ? { premise: p.premise } : {}),
+        ...(p.genre !== undefined ? { genre: p.genre } : {}),
+        ...(p.charter !== undefined ? { charter: p.charter } : {}),
+        ...(p.policy !== undefined ? { policy: p.policy } : {}),
+      });
+    }
+  }
+
+  await db.run(sql`
+    UPDATE works SET canon_rev = ${newRev}, updated_at = ${now()}
+    WHERE id = ${cs.work_id}
+  `);
+  const kind = input.force ? "force_override" : cs.kind;
+  const updated = await updateChangeSetState(db, {
+    id: cs.id,
+    status: "applied",
+    kind,
+    force: input.force ? 1 : cs.force,
+    decidedAt: now(),
+    appliedAt: now(),
+  });
+  if (!updated) return null;
+  const findings = await listFindingsByChangeSet(db, cs.id);
+  return {
+    changeSet: ChangeSetWithFindingsSchema.parse({ ...updated, findings }),
+    newCanonRev: newRev,
+  };
 }

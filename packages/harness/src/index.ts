@@ -2,10 +2,14 @@ import {
   JOB_KIND_GENERATE_SCENE,
   JOB_KIND_ORCHESTRATOR_TURN,
   JOB_KIND_PLAN_WORK,
+  JOB_KIND_REVIEW_CHANGE,
   JOB_KIND_SMOKE_GENERATE,
   SmokeGeneratePayloadSchema,
   type AgentJob,
   type CanonFact,
+  type ChangeSetContextResponse,
+  type ChangeSetOp,
+  type ChangeSetWithFindings,
   type ChatMessage,
   type ChatRole,
   type ChatThread,
@@ -21,6 +25,7 @@ import {
 import type { Provider, TokenCallback } from "@houchi/providers";
 import { runOrchestratorTurn } from "./orchestrator.js";
 import { runPlanWork } from "./plan.js";
+import { runReviewChange } from "./review.js";
 import { runGenerateScene, type SceneContextData } from "./scene.js";
 
 /**
@@ -110,6 +115,31 @@ export interface JobContext {
     work_id: string;
     statements: string[];
     provenance: string;
+  }): Promise<{ added: number }>;
+  /**
+   * orchestrator_turn: <<CHANGESET>> から変更セットを作成する
+   * (status=proposed + 影響分析をサーバー側で計算)。
+   */
+  createChangeSet?(input: {
+    work_id: string;
+    title: string;
+    description?: string;
+    ops: ChangeSetOp[];
+    message_id?: string | null;
+  }): Promise<ChangeSetWithFindings>;
+  /** review_change: 変更セット+影響シーン本文+現行正典を取得する。 */
+  fetchChangeSetContext?(changeSetId: string): Promise<ChangeSetContextResponse>;
+  /** review_change: findings を記録する (重複はサーバー側でスキップ)。 */
+  recordReviewFindings?(input: {
+    change_set_id: string;
+    findings: {
+      kind: string;
+      severity: string;
+      summary: string;
+      detail?: string;
+      scene_id?: string | null;
+      fact_id?: string | null;
+    }[];
   }): Promise<{ added: number }>;
   /** generate_scene: シーン+契約+作品+正典+直近シーンを取得する。 */
   fetchSceneContext?(sceneId: string): Promise<SceneContextData>;
@@ -210,6 +240,7 @@ export function createDefaultHandlers(): JobHandlers {
     [JOB_KIND_ORCHESTRATOR_TURN]: runOrchestratorTurn,
     [JOB_KIND_GENERATE_SCENE]: runGenerateScene,
     [JOB_KIND_PLAN_WORK]: runPlanWork,
+    [JOB_KIND_REVIEW_CHANGE]: runReviewChange,
   };
 }
 
