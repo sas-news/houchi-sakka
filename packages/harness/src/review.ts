@@ -6,6 +6,7 @@ import {
   type WritingContractPayload,
 } from "@houchi/contracts";
 import { criticSkill, type CriticOutput } from "@houchi/skills";
+import { toCriticOutput, validateProse } from "@houchi/validators";
 import type { JobHandler } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
@@ -20,8 +21,8 @@ const MAX_REVIEW_SCENES = 10;
  * review_change: 適用済み変更セット1件を処理する自動レビュー (Phase 2b,
  * spec §5.3 の事後検査)。force_override / manual_edit でも同じレビューが走る。
  *
- * 影響対象シーンの本文 vs 適用後の現行正典を critic スキルで検査し、
- * 衝突を review_findings に記録する (L0 レビュー。執筆は止めない)。
+ * 影響対象シーンの本文 vs 適用後の現行正典を決定的検査 + critic スキルで
+ * 検査し、衝突を review_findings に記録する (L0 レビュー。執筆は止めない)。
  *
  * 段構成 (各段の出力は checkpoint に永続化、resume で再実行しない):
  *   1. fetch  — 変更セット+影響シーン+現行正典を取得
@@ -54,6 +55,14 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
   const reviews = (checkpoint.reviews ?? {}) as Record<string, CriticOutput>;
   for (const scene of targetScenes) {
     if (reviews[scene.id]) continue;
+    // 決定的検査 (LLM 不要) を critic の前に走らせ、findings をマージする
+    // (spec §10「決定的に検査できるものはコードで検査する」)。
+    const deterministic = toCriticOutput(
+      validateProse(scene.prose_md, {
+        contract: scene.contract ?? EMPTY_CONTRACT,
+        canonFacts: csCtx.canon_facts,
+      }),
+    );
     const out = await runSkillStep(ctx, {
       job,
       skill: criticSkill,
@@ -68,7 +77,10 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
       keyRef: payload.key_ref,
       step: "review_scene",
     });
-    reviews[scene.id] = out;
+    reviews[scene.id] = {
+      violations: [...deterministic.violations, ...out.violations],
+      notes: [...deterministic.notes, ...out.notes],
+    };
     await ctx.saveCheckpoint({ reviews });
   }
 

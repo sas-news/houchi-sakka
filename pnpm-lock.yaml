@@ -171,6 +171,9 @@ importers:
       '@houchi/skills':
         specifier: workspace:*
         version: link:../skills
+      '@houchi/validators':
+        specifier: workspace:*
+        version: link:../validators
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -245,6 +248,59 @@ importers:
         version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
 
   packages/skills:
+    dependencies:
+      '@houchi/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
+
+  packages/story-evals:
+    dependencies:
+      '@houchi/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@houchi/harness':
+        specifier: workspace:*
+        version: link:../harness
+      '@houchi/providers':
+        specifier: workspace:*
+        version: link:../providers
+      '@houchi/skills':
+        specifier: workspace:*
+        version: link:../skills
+      '@houchi/validators':
+        specifier: workspace:*
+        version: link:../validators
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.15
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
+
+  packages/validators:
     dependencies:
       '@houchi/contracts':
         specifier: workspace:*

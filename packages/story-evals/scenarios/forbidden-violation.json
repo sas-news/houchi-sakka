@@ -1,0 +1,36 @@
+{
+  "kind": "generation",
+  "name": "禁止事項違反の検出",
+  "description": "contract.forbidden の展開が本文に書かれたケース。AI検査が見逃しても決定的検査が high を返すことを確認する。",
+  "scene_title": "廃線ホーム",
+  "scene_purpose": "導入",
+  "contract": {
+    "role": "導入",
+    "pov": "三人称",
+    "required_events": ["雨上がり"],
+    "forbidden": ["黒猫の正体が明かされる"],
+    "knowledge_notes": "",
+    "connections": ""
+  },
+  "canon_facts": [
+    { "statement": "汽車はもう走っていない", "provenance": "orchestrator" }
+  ],
+  "writer_response": {
+    "prose_md": "雨上がりのホームで、彼は黒猫の正体が明かされるのを見た。汽車はもう走っていない。",
+    "canon_facts_new": [],
+    "depends_on": [
+      { "target_kind": "canon_fact", "target_ref": "汽車はもう走っていない" }
+    ]
+  },
+  "critic_response": {
+    "violations": [],
+    "notes": ["AI検査は見落とした想定"]
+  },
+  "expect": {
+    "findings_include": [
+      { "rule": "contract.forbidden", "severity": "high" }
+    ],
+    "min_high": 1,
+    "required_events_missing": 0
+  }
+}

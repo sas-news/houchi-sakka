@@ -19,6 +19,9 @@
       ],
       "@houchi/skills": [
         "../skills/src/index.ts"
+      ],
+      "@houchi/validators": [
+        "../validators/src/index.ts"
       ]
     },
     "rootDir": "../.."

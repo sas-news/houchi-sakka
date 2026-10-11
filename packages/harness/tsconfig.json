@@ -10,7 +10,8 @@
     { "path": "../contracts" },
     { "path": "../prompts" },
     { "path": "../providers" },
-    { "path": "../skills" }
+    { "path": "../skills" },
+    { "path": "../validators" }
   ],
   "include": ["src"]
 }

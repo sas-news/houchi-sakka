@@ -1,0 +1,37 @@
+{
+  "kind": "generation",
+  "name": "秘密の正典の漏洩検出",
+  "description": "[SECRET] マーク付きの正典が本文に出たケース。意図しない早期開示を決定的検査が high で拾う。",
+  "scene_title": "駅長室",
+  "scene_purpose": "展開",
+  "contract": {
+    "role": "展開",
+    "pov": "一人称",
+    "required_events": [],
+    "forbidden": [],
+    "knowledge_notes": "駅長の秘密はまだ明かさない",
+    "connections": ""
+  },
+  "canon_facts": [
+    {
+      "statement": "[SECRET] 駅長は裏で切符を盗んでいる",
+      "provenance": "orchestrator"
+    },
+    { "statement": "汽車はもう走っていない", "provenance": "orchestrator" }
+  ],
+  "writer_response": {
+    "prose_md": "その夜、駅長は裏で切符を盗んでいるのを私は目撃した。汽車はもう走っていないのに、彼だけが忙しそうにしていた。",
+    "canon_facts_new": [],
+    "depends_on": [
+      { "target_kind": "canon_fact", "target_ref": "汽車はもう走っていない" }
+    ]
+  },
+  "critic_response": {
+    "violations": [],
+    "notes": []
+  },
+  "expect": {
+    "findings_include": [{ "rule": "canon.secret_leak", "severity": "high" }],
+    "min_high": 1
+  }
+}

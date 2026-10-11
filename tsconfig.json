@@ -8,6 +8,8 @@
     { "path": "packages/harness" },
     { "path": "packages/prompts" },
     { "path": "packages/skills" },
+    { "path": "packages/story-evals" },
+    { "path": "packages/validators" },
     { "path": "packages/workspace" },
     { "path": "apps/runner" }
   ]
