@@ -76,6 +76,7 @@ import {
   getKeyById,
   getLatestContractByScene,
   getLatestEpisode,
+  getMessageById,
   getProposalById,
   getReleaseById,
   getReviewFindingById,
@@ -95,6 +96,7 @@ import {
   listMessages,
   listOpenJobsByWork,
   listProgress,
+  listRecentJobsByWork,
   listProposalsByWork,
   listPublicWorkEpisodes,
   listReleasesByWork,
@@ -478,6 +480,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (!thread) return err(500, "internal", "対話スレッドが見つかりません");
           const messages = await listMessages(db, thread.id);
           const openJobs = await listOpenJobsByWork(db, work.id);
+          const recentJobs = await listRecentJobsByWork(db, work.id);
           const proposals = await listProposalsByWork(db, work.id);
           const changeSets = await listChangeSetsByWork(db, work.id);
           const active = openJobs[0] ?? null;
@@ -494,6 +497,7 @@ export function createApp(deps: WebDeps): FetchHandler {
                 }
               : null,
             queued_jobs: Math.max(0, openJobs.length - 1),
+            recent_jobs: recentJobs.map(publicJob),
           });
         }
 
@@ -549,6 +553,99 @@ export function createApp(deps: WebDeps): FetchHandler {
               trigger_message_id: message.id,
             },
             // 同一メッセージからの重複ジョブを抑止
+            idempotencyKey: `orchestrator_turn:${message.id}`,
+          });
+          return json({ message, job: publicJob(job) }, 202);
+        }
+
+        /**
+         * POST /api/works/:id/jobs/:jobId/resend — 失敗/中止した対話
+         * (orchestrator_turn) ジョブを、元メッセージと同じ内容の新規
+         * メッセージ+ジョブとして投げ直す (spec §3.4 の再送導線)。
+         * 冪等は通常送信と同じく message 単位の idempotency_key に乗せる。
+         */
+        const jobResend = pathname.match(
+          /^\/api\/works\/([^/]+)\/jobs\/([^/]+)\/resend$/,
+        );
+        if (method === "POST" && jobResend) {
+          const work = await getWorkById(db, jobResend[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const oldJob = await getJob(db, jobResend[2]!);
+          if (!oldJob || oldJob.work_ref !== work.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          if (oldJob.kind !== JOB_KIND_ORCHESTRATOR_TURN) {
+            return err(400, "bad_request", "対話ジョブのみ再送できます");
+          }
+          if (oldJob.status !== "failed" && oldJob.status !== "cancelled") {
+            return err(
+              400,
+              "bad_request",
+              "失敗または中止したジョブのみ再送できます",
+            );
+          }
+          const triggerId = oldJob.payload.trigger_message_id;
+          const original =
+            typeof triggerId === "string"
+              ? await getMessageById(db, triggerId)
+              : null;
+          if (!original) {
+            return err(
+              404,
+              "not_found",
+              "元のメッセージが見つかりません",
+            );
+          }
+          const thread = await getThreadByWorkId(db, work.id);
+          if (!thread) return err(500, "internal", "対話スレッドが見つかりません");
+
+          // 元ジョブが使ったキーを優先し、無効/削除済みなら最新キーに落ちる
+          // (通常送信の既定解決と同じ)。
+          let key = null;
+          if (typeof oldJob.payload.key_ref === "string") {
+            const k = await getKeyById(db, oldJob.payload.key_ref);
+            if (k && k.owner_ref === user.id) key = k;
+          }
+          if (!key) {
+            const keys = await listKeysByOwner(db, user.id);
+            key = keys.at(-1) ?? null;
+          }
+          if (!key) {
+            return err(
+              400,
+              "bad_request",
+              "プロバイダーのAPIキーが未登録です。キー設定から登録してください",
+            );
+          }
+
+          const message = await appendMessage(db, {
+            threadId: thread.id,
+            role: "user",
+            content: original.content,
+          });
+          if (work.status === "setup") {
+            await patchWork(db, { id: work.id, status: "active" });
+          }
+          const { job } = await createJob(db, {
+            kind: JOB_KIND_ORCHESTRATOR_TURN,
+            workRef: work.id,
+            userRef: user.id,
+            payload: {
+              thread_id: thread.id,
+              work_id: work.id,
+              user_ref: user.id,
+              key_ref: key.id,
+              provider: key.provider,
+              model:
+                typeof oldJob.payload.model === "string"
+                  ? oldJob.payload.model
+                  : deps.defaultModel,
+              trigger_message_id: message.id,
+              resend_of: oldJob.id,
+            },
+            // 新しいメッセージに紐づくので通常送信と同じ冪等キーで二重防止
             idempotencyKey: `orchestrator_turn:${message.id}`,
           });
           return json({ message, job: publicJob(job) }, 202);

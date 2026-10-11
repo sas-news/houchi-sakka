@@ -411,6 +411,25 @@ export async function listOpenJobsByWork(
   return rows.map(rowToJob);
 }
 
+/**
+ * 作品に紐づく直近ジョブを全 status で新しい順に返す (spec §3.4)。
+ * 実行履歴の表示と失敗ジョブの可視化用。failed/cancelled の
+ * 理由は job.error に入っている。
+ */
+export async function listRecentJobsByWork(
+  db: DbLike,
+  workId: string,
+  limit = 20,
+): Promise<AgentJob[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM agent_jobs
+        WHERE work_ref = ${workId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ${limit}`,
+  )) as Row[];
+  return rows.map(rowToJob);
+}
+
 // ---------------------------------------------------------------------------
 // provider_keys
 // ---------------------------------------------------------------------------
@@ -678,6 +697,16 @@ export async function getMessageByJobId(
 ): Promise<ChatMessage | null> {
   const r = (await db.get(
     sql`SELECT * FROM chat_messages WHERE job_id = ${jobId}`,
+  )) as Row | undefined;
+  return r ? rowToMessage(r) : null;
+}
+
+export async function getMessageById(
+  db: DbLike,
+  id: string,
+): Promise<ChatMessage | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM chat_messages WHERE id = ${id}`,
   )) as Row | undefined;
   return r ? rowToMessage(r) : null;
 }
@@ -1228,6 +1257,8 @@ function rowToChangeSet(r: Row): ChangeSet {
     force_reason: r.force_reason ?? null,
     base_rev: r.base_rev ?? null,
     message_id: r.message_id ?? null,
+    prev_settings:
+      r.prev_settings == null ? null : JSON.parse(String(r.prev_settings)),
     created_at: r.created_at,
     decided_at: r.decided_at ?? null,
     applied_at: r.applied_at ?? null,
@@ -1354,6 +1385,8 @@ export async function updateChangeSetState(
     kind?: string;
     force?: number;
     forceReason?: string | null | undefined;
+    /** 適用前の works.charter/policy スナップショット (JSON 文字列)。 */
+    prevSettings?: string | null | undefined;
     decidedAt?: number | null;
     appliedAt?: number | null;
   },
@@ -1366,6 +1399,7 @@ export async function updateChangeSetState(
       kind = ${input.kind ?? cur.kind},
       force = ${input.force ?? cur.force},
       force_reason = ${input.forceReason === undefined ? cur.force_reason : input.forceReason},
+      prev_settings = ${input.prevSettings === undefined ? (cur.prev_settings === null ? null : JSON.stringify(cur.prev_settings)) : input.prevSettings},
       decided_at = ${input.decidedAt === undefined ? cur.decided_at : input.decidedAt},
       applied_at = ${input.appliedAt === undefined ? cur.applied_at : input.appliedAt}
     WHERE id = ${input.id}
@@ -1735,12 +1769,23 @@ export async function applyChangeSet(
     WHERE id = ${cs.work_id}
   `);
   const kind = input.force ? "force_override" : cs.kind;
+  // charter/policy を変える update_work op がある時は、適用前の値を
+  // change_sets.prev_settings に退避する (docs/gaps.md「変更前
+  // スナップショットの保持」。canon_facts とは別に作品設定も残す)。
+  const keepsPrevSettings = cs.ops.some(
+    (op) =>
+      op.op === "update_work" &&
+      (op.patch.charter !== undefined || op.patch.policy !== undefined),
+  );
   const updated = await updateChangeSetState(db, {
     id: cs.id,
     status: "applied",
     kind,
     force: input.force ? 1 : cs.force,
     forceReason: input.force ? (input.reason ?? null) : undefined,
+    prevSettings: keepsPrevSettings
+      ? JSON.stringify({ charter: work.charter, policy: work.policy })
+      : undefined,
     decidedAt: now(),
     appliedAt: now(),
   });

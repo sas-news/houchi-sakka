@@ -826,6 +826,13 @@ export const WorkDetailResponseSchema = z.object({
     .nullable(),
   /** 直前に送られてキュー待ちのジョブ数 (active_job を除く)。 */
   queued_jobs: z.number().int(),
+  /** 変更タブ用の変更セット一覧 (findings 付き、古い順)。 */
+  change_sets: z.array(z.lazy(() => ChangeSetWithFindingsSchema)),
+  /**
+   * 直近ジョブの実行履歴 (全 status、created_at 降順、上限あり)。
+   * failed/cancelled の表示と再送導線に使う (spec §3.4)。
+   */
+  recent_jobs: z.array(AgentJobSchema),
 });
 export type WorkDetailResponse = z.infer<typeof WorkDetailResponseSchema>;
 
@@ -1179,6 +1186,17 @@ export const ChangeSetSchema = z.object({
   base_rev: z.number().int().nullable(),
   /** この提案を出したチャットメッセージ (カード紐付け)。 */
   message_id: z.string().nullable(),
+  /**
+   * charter/policy を変える update_work op 適用時に退避した
+   * 適用前の works.charter/policy。それ以外の変更セットは null
+   * (docs/gaps.md「変更前スナップショットの保持」)。
+   */
+  prev_settings: z
+    .object({
+      charter: z.unknown().nullable(),
+      policy: z.unknown().nullable(),
+    })
+    .nullable(),
   created_at: z.number(),
   decided_at: z.number().nullable(),
   applied_at: z.number().nullable(),

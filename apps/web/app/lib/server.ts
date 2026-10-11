@@ -6,6 +6,7 @@ import {
   listOpenJobsByWork,
   listProgress,
   listProposalsByWork,
+  listRecentJobsByWork,
   listChangeSetsByWork,
 } from "@houchi/database";
 import { depsContext } from "./context";
@@ -34,6 +35,7 @@ export async function getWorkDetail(
   if (!thread) return null;
   const messages = await listMessages(db, thread.id);
   const openJobs = await listOpenJobsByWork(db, work.id);
+  const recentJobs = await listRecentJobsByWork(db, work.id);
   const proposals = await listProposalsByWork(db, work.id);
   const changeSets = await listChangeSetsByWork(db, work.id);
   const active = openJobs[0] ?? null;
@@ -50,5 +52,6 @@ export async function getWorkDetail(
         }
       : null,
     queued_jobs: Math.max(0, openJobs.length - 1),
+    recent_jobs: recentJobs.map((j) => ({ ...j, lease_token: null })),
   };
 }
