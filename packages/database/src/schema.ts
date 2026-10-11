@@ -311,6 +311,36 @@ export const reviewFindings = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// Phase 3a: 公開リリース (spec §6 Release — 話単位の不変スナップショット)
+// ---------------------------------------------------------------------------
+
+export const releases = sqliteTable(
+  "releases",
+  {
+    id: text("id").primaryKey(),
+    workId: text("work_id").notNull(),
+    episodeId: text("episode_id").notNull(),
+    /** その話のリリース通し番号 (1 始まり)。 */
+    revNo: integer("rev_no").notNull(),
+    /** 発行時点の works.canon_rev (spec §6.3)。 */
+    canonRev: integer("canon_rev").notNull(),
+    /** 公開時点の話タイトル。 */
+    title: text("title").notNull(),
+    /** [{scene_ord, scene_title, prose_md}] — 発行時点の最新リビジョンをコピー凍結。 */
+    contentJson: text("content_json").notNull(),
+    /** published | unlisted */
+    status: text("status").notNull().default("published"),
+    publishedAt: integer("published_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("releases_episode_rev_uq").on(t.episodeId, t.revNo),
+    index("releases_work_idx").on(t.workId),
+    index("releases_episode_idx").on(t.episodeId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // better-auth の管理テーブル (Phase 1a, OAuth ログイン用)。
 // 列名・型は better-auth drizzle adapter の想定スキーマに合わせる。
 // ---------------------------------------------------------------------------

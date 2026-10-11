@@ -1207,6 +1207,88 @@ export const ChangeSetResponseSchema = z.object({
 });
 export type ChangeSetResponse = z.infer<typeof ChangeSetResponseSchema>;
 
+// ---------------------------------------------------------------------------
+// Phase 3a: 公開リリース (spec §6 Release, P9: 公開版と執筆中の真実を分離)
+// ---------------------------------------------------------------------------
+
+/** リリースの状態。published=公開中 / unlisted=取り下げ済み (reader で 404)。 */
+export const ReleaseStatusSchema = z.enum(["published", "unlisted"]);
+export type ReleaseStatus = z.infer<typeof ReleaseStatusSchema>;
+
+/** リリース本文の 1 シーン (発行時点の最新リビジョンをコピーして凍結)。 */
+export const ReleaseSceneSchema = z.object({
+  scene_ord: z.number().int(),
+  scene_title: z.string(),
+  prose_md: z.string(),
+});
+export type ReleaseScene = z.infer<typeof ReleaseSceneSchema>;
+
+/**
+ * 話単位の不変公開スナップショット (spec §6.3: 発行時点の正典リビジョンを指す)。
+ * 発行後に本文を改稿・正典を変更しても、この行は書き換わらない。
+ */
+export const ReleaseSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  episode_id: z.string(),
+  /** その話のリリース通し番号 (1 始まり)。 */
+  rev_no: z.number().int(),
+  /** 発行時点の works.canon_rev。 */
+  canon_rev: z.number().int(),
+  /** 公開時点の話タイトル。 */
+  title: z.string(),
+  /** 凍結した本文 (話のシーンを順に)。 */
+  content: z.array(ReleaseSceneSchema),
+  status: ReleaseStatusSchema,
+  published_at: z.number(),
+  created_at: z.number(),
+});
+export type Release = z.infer<typeof ReleaseSchema>;
+
+/** POST /api/works/:id/episodes/:epId/releases の応答。 */
+export const ReleaseResponseSchema = z.object({
+  release: ReleaseSchema,
+});
+export type ReleaseResponse = z.infer<typeof ReleaseResponseSchema>;
+
+/** GET /api/works/:id/releases — 公開タブのデータ一式 (owner のみ)。 */
+export const WorkReleasesResponseSchema = z.object({
+  episodes: z.array(
+    z.object({
+      id: z.string(),
+      ord: z.number().int(),
+      title: z.string(),
+      /** 本文リビジョンが 1 件以上あるか (公開に必要)。 */
+      has_prose: z.boolean(),
+      /** 最新の公開以降に本文が変わっているか (未公開の変更あり)。 */
+      dirty: z.boolean(),
+    }),
+  ),
+  releases: z.array(ReleaseSchema),
+});
+export type WorkReleasesResponse = z.infer<typeof WorkReleasesResponseSchema>;
+
+/**
+ * GET /api/r/:id — 読者向けの公開リリース。
+ * spec P9/§9: タイトル・話名・本文・公開日だけを返し、
+ * 正典・ユーザー情報・下書きは絶対に含めない。
+ */
+export const PublicReleaseSchema = z.object({
+  id: z.string(),
+  work_title: z.string(),
+  /** 話タイトル (公開時点)。 */
+  title: z.string(),
+  rev_no: z.number().int(),
+  published_at: z.number(),
+  scenes: z.array(ReleaseSceneSchema),
+});
+export type PublicRelease = z.infer<typeof PublicReleaseSchema>;
+
+export const PublicReleaseResponseSchema = z.object({
+  release: PublicReleaseSchema,
+});
+export type PublicReleaseResponse = z.infer<typeof PublicReleaseResponseSchema>;
+
 /** GET /api/internal/change-sets/:id/context — review_change の入力材料。 */
 export const ChangeSetContextResponseSchema = z.object({
   change_set: ChangeSetWithFindingsSchema,

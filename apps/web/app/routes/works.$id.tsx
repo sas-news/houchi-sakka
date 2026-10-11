@@ -19,11 +19,13 @@ import type {
   ChangeSetOp,
   KeyInfo,
   ProposalInfo,
+  ReleaseInfo,
   SceneInfo,
   SceneRevisionInfo,
   WorkDetail,
   WorkInfo,
   WorkProse,
+  WorkReleases,
   WorkspaceFileInfo,
 } from "../lib/types";
 
@@ -99,6 +101,26 @@ const FINDING_SEV_LABEL: Record<string, string> = {
   medium: "中",
   high: "高",
 };
+
+const RELEASE_STATUS_LABEL: Record<ReleaseInfo["status"], string> = {
+  published: "公開中",
+  unlisted: "取り下げ済み",
+};
+
+const RELEASE_STATUS_BADGE: Record<ReleaseInfo["status"], string> = {
+  published: "badge badge--ok",
+  unlisted: "badge",
+};
+
+function formatDateTime(ts: number): string {
+  return new Date(ts).toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 function opText(op: ChangeSetOp): string {
   switch (op.op) {
@@ -814,7 +836,161 @@ function ChangesView({
   );
 }
 
-type Tab = "chat" | "prose" | "materials" | "changes" | "settings";
+/** 公開タブ: 話ごとのリリース履歴 + 公開操作 + 公開URL。 */
+function ReleasesView({
+  workId,
+  data,
+  busy,
+  onPublish,
+  onUnlist,
+}: {
+  workId: string;
+  data: WorkReleases | null;
+  busy: boolean;
+  onPublish: (episodeId: string) => void;
+  onUnlist: (releaseId: string) => void;
+}) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  if (data === null) {
+    return (
+      <div className="loading">
+        <span className="spinner" aria-hidden="true" />
+        読み込み中…
+      </div>
+    );
+  }
+  if (data.episodes.length === 0) {
+    return (
+      <div className="empty">
+        まだ話がありません。対話で計画を立てて本文を生成すると、ここから公開できます。
+      </div>
+    );
+  }
+
+  const copyUrl = async (releaseId: string) => {
+    const url = `${window.location.origin}/r/${releaseId}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopiedId(releaseId);
+    setTimeout(() => setCopiedId((c) => (c === releaseId ? null : c)), 2000);
+  };
+
+  const releasesByEpisode = new Map<string, ReleaseInfo[]>();
+  for (const r of data.releases) {
+    const list = releasesByEpisode.get(r.episode_id) ?? [];
+    list.push(r);
+    releasesByEpisode.set(r.episode_id, list);
+  }
+
+  return (
+    <div>
+      <p className="muted">
+        話ごとに、その時点の本文を凍結した不変の公開版 (リリース) を発行します。
+        公開後に本文を改稿しても、発行済みの公開版は変わりません。
+      </p>
+      {data.episodes.map((ep) => {
+        const rels = releasesByEpisode.get(ep.id) ?? [];
+        const latest = rels.at(-1);
+        const isPublished = latest?.status === "published";
+        return (
+          <div key={ep.id} className="card release-card">
+            <div className="release-head">
+              <h2>
+                第{ep.ord}話 {ep.title}{" "}
+                {isPublished ? (
+                  <span className="badge badge--ok">公開中</span>
+                ) : rels.length > 0 ? (
+                  <span className="badge">非公開</span>
+                ) : (
+                  <span className="badge">未公開</span>
+                )}
+                {ep.dirty ? (
+                  <span className="badge badge--warn">未公開の変更あり</span>
+                ) : null}
+              </h2>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  disabled={busy || !ep.has_prose}
+                  onClick={() => onPublish(ep.id)}
+                >
+                  {isPublished || rels.length > 0
+                    ? "最新の本文で公開する"
+                    : "この版を公開する"}
+                </button>
+              </div>
+              {!ep.has_prose ? (
+                <p className="muted">
+                  本文がまだありません。本文を生成してから公開できます。
+                </p>
+              ) : null}
+            </div>
+            {rels.length === 0 ? null : (
+              <ul className="release-list">
+                {[...rels].reverse().map((r) => (
+                  <li key={r.id} className="release-row">
+                    <div className="release-info">
+                      <strong>第{r.rev_no}版</strong>{" "}
+                      <span className={RELEASE_STATUS_BADGE[r.status]}>
+                        {RELEASE_STATUS_LABEL[r.status]}
+                      </span>{" "}
+                      <span className="muted">
+                        {formatDateTime(r.published_at)}
+                      </span>
+                    </div>
+                    {r.status === "published" ? (
+                      <div className="release-url">
+                        <code>{`${window.location.origin}/r/${r.id}`}</code>
+                        <div className="release-actions">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void copyUrl(r.id)}
+                          >
+                            {copiedId === r.id ? "コピーしました" : "URLをコピー"}
+                          </button>
+                          <a
+                            className="secondary release-open"
+                            href={`/r/${r.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            読者ページを開く
+                          </a>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() => onUnlist(r.id)}
+                          >
+                            取り下げる
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+      <p className="muted">
+        作品ID: {workId} — 公開した各版のURLは、ログインしていない読者にも開けます。
+      </p>
+    </div>
+  );
+}
+
+type Tab = "chat" | "prose" | "materials" | "changes" | "publish" | "settings";
 
 export default function WorkPage({
   loaderData,
@@ -839,6 +1015,9 @@ export default function WorkPage({
   const [wsPath, setWsPath] = useState<string | null>(null);
   const [wsContent, setWsContent] = useState<string | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
+  // 公開タブのデータ
+  const [releases, setReleases] = useState<WorkReleases | null>(null);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
 
   const workId = loaderData.work.id;
 
@@ -880,6 +1059,12 @@ export default function WorkPage({
         .listWorkspaceFiles(workId)
         .then((r) => setWsFiles(r.files))
         .catch(() => setWsFiles([]));
+    }
+    if (tab === "publish") {
+      api
+        .getReleases(workId)
+        .then(setReleases)
+        .catch(() => setReleases({ episodes: [], releases: [] }));
     }
   }, [tab, refreshProse, keys, workId]);
 
@@ -1011,6 +1196,57 @@ export default function WorkPage({
     }
   };
 
+  const refreshReleases = useCallback(async () => {
+    try {
+      setReleases(await api.getReleases(workId));
+    } catch {
+      /* 同上 */
+    }
+  }, [workId]);
+
+  const publishEpisode = async (episodeId: string) => {
+    if (
+      !window.confirm(
+        "現時点の本文を凍結して公開します。" +
+          "公開後に本文を改稿しても、この公開版は変わりません。公開しますか?",
+      )
+    ) {
+      return;
+    }
+    setSending(true);
+    setReleaseError(null);
+    try {
+      await api.publishRelease(workId, episodeId);
+      await refreshReleases();
+    } catch (e) {
+      setReleaseError(e instanceof ApiError ? e.message : "公開に失敗しました");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const unlistRelease = async (releaseId: string) => {
+    if (
+      !window.confirm(
+        "この公開版を取り下げますか? 読者ページにアクセスできなくなります。",
+      )
+    ) {
+      return;
+    }
+    setSending(true);
+    setReleaseError(null);
+    try {
+      await api.unlistRelease(releaseId);
+      await refreshReleases();
+    } catch (e) {
+      setReleaseError(
+        e instanceof ApiError ? e.message : "取り下げに失敗しました",
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
   const saveSettings = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -1054,6 +1290,7 @@ export default function WorkPage({
     { key: "prose", label: "本文" },
     { key: "materials", label: "資料" },
     { key: "changes", label: "変更" },
+    { key: "publish", label: "公開" },
     { key: "settings", label: "設定" },
   ];
 
@@ -1287,6 +1524,19 @@ export default function WorkPage({
             onForce={(id) => void forceChangeSet(id)}
             onToggleFinding={(id, s) => void toggleFinding(id, s)}
             busy={sending || running}
+          />
+        </section>
+      ) : null}
+
+      {tab === "publish" ? (
+        <section>
+          {releaseError ? <p className="error-text">{releaseError}</p> : null}
+          <ReleasesView
+            workId={workId}
+            data={releases}
+            busy={sending}
+            onPublish={(id) => void publishEpisode(id)}
+            onUnlist={(id) => void unlistRelease(id)}
           />
         </section>
       ) : null}

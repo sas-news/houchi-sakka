@@ -13,9 +13,12 @@ import {
   ProgressEventSchema,
   ProposalSchema,
   ProviderKeySchema,
+  ReleaseSchema,
+  ReleaseStatusSchema,
   ReviewFindingSchema,
   SceneRevisionSchema,
   SceneSchema,
+  tiptapDocToText,
   WorkSchema,
   WorkStatusSchema,
   WritingContractPayloadSchema,
@@ -37,6 +40,8 @@ import {
   type ProgressEventType,
   type Proposal,
   type ProviderKey,
+  type Release,
+  type ReleaseScene,
   type ReviewFinding,
   type Scene,
   type SceneRevision,
@@ -1673,4 +1678,105 @@ export async function applyChangeSet(
     changeSet: ChangeSetWithFindingsSchema.parse({ ...updated, findings }),
     newCanonRev: newRev,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3a: 公開リリース (spec §6 Release, P9)
+// ---------------------------------------------------------------------------
+
+function rowToRelease(r: Row): Release {
+  return ReleaseSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    episode_id: r.episode_id,
+    rev_no: r.rev_no,
+    canon_rev: r.canon_rev,
+    title: r.title,
+    content: JSON.parse(String(r.content_json)),
+    status: ReleaseStatusSchema.parse(r.status),
+    published_at: r.published_at,
+    created_at: r.created_at,
+  });
+}
+
+/**
+ * 話の現在本文をスナップショット用に組み立てる。
+ * 各シーンの最新リビジョンを tiptap→text にして順に並べる。
+ * 本文リビジョンが無いシーンは含めない。
+ */
+export async function snapshotEpisodeProse(
+  db: DbLike,
+  episodeId: string,
+): Promise<ReleaseScene[]> {
+  const sceneRows = await listScenesByEpisode(db, episodeId);
+  const scenes: ReleaseScene[] = [];
+  for (const scene of sceneRows) {
+    const revs = await listRevisionsByScene(db, scene.id);
+    const latest = revs.at(-1);
+    if (!latest) continue;
+    scenes.push({
+      scene_ord: scene.ord,
+      scene_title: scene.title,
+      prose_md: tiptapDocToText(latest.content_json),
+    });
+  }
+  return scenes;
+}
+
+/** リリースを発行する。rev_no = その話の既存最大+1 (ユニーク制約)。 */
+export async function createRelease(
+  db: DbLike,
+  input: {
+    workId: string;
+    episodeId: string;
+    title: string;
+    canonRev: number;
+    content: ReleaseScene[];
+  },
+): Promise<Release> {
+  const t = now();
+  const rows = (await db.all(sql`
+    INSERT INTO releases (id, work_id, episode_id, rev_no, canon_rev, title, content_json, status, published_at, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.episodeId},
+            (SELECT COALESCE(MAX(rev_no), 0) + 1 FROM releases WHERE episode_id = ${input.episodeId}),
+            ${input.canonRev}, ${input.title}, ${JSON.stringify(input.content)},
+            'published', ${t}, ${t})
+    RETURNING *
+  `)) as Row[];
+  return rowToRelease(rows[0]!);
+}
+
+export async function getReleaseById(
+  db: DbLike,
+  id: string,
+): Promise<Release | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM releases WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToRelease(r) : null;
+}
+
+export async function listReleasesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<Release[]> {
+  const rows = (await db.all(
+    sql`SELECT r.* FROM releases r
+        JOIN episodes e ON e.id = r.episode_id
+        WHERE r.work_id = ${workId}
+        ORDER BY e.ord ASC, r.rev_no ASC`,
+  )) as Row[];
+  return rows.map(rowToRelease);
+}
+
+export async function setReleaseStatus(
+  db: DbLike,
+  input: { id: string; status: "published" | "unlisted" },
+): Promise<Release | null> {
+  const rows = (await db.all(sql`
+    UPDATE releases SET status = ${input.status}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rows.length > 0 ? rowToRelease(rows[0]!) : null;
 }

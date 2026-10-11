@@ -212,3 +212,49 @@ export interface WorkspaceFileInfo {
   path: string;
   summary: string;
 }
+
+/** Phase 3a: 公開リリース (不変スナップショット)。 */
+export interface ReleaseSceneInfo {
+  scene_ord: number;
+  scene_title: string;
+  prose_md: string;
+}
+
+export interface ReleaseInfo {
+  id: string;
+  work_id: string;
+  episode_id: string;
+  rev_no: number;
+  canon_rev: number;
+  title: string;
+  content: ReleaseSceneInfo[];
+  status: "published" | "unlisted";
+  published_at: number;
+  created_at: number;
+}
+
+/** 公開タブの話行 (GET /api/works/:id/releases)。 */
+export interface ReleaseEpisodeInfo {
+  id: string;
+  ord: number;
+  title: string;
+  /** 本文リビジョンが 1 件以上あるか。 */
+  has_prose: boolean;
+  /** 最新の公開以降に本文が変わっているか。 */
+  dirty: boolean;
+}
+
+export interface WorkReleases {
+  episodes: ReleaseEpisodeInfo[];
+  releases: ReleaseInfo[];
+}
+
+/** GET /api/r/:id — 読者向け公開リリース (安全なフィールドのみ)。 */
+export interface PublicReleaseInfo {
+  id: string;
+  work_title: string;
+  title: string;
+  rev_no: number;
+  published_at: number;
+  scenes: ReleaseSceneInfo[];
+}
