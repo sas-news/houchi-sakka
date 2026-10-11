@@ -18,6 +18,7 @@ import { getWorkDetail, requireUser } from "../lib/server";
 import type {
   ChangeSetInfo,
   ChangeSetOp,
+  JobInfo,
   KeyInfo,
   ProposalInfo,
   ReleaseInfo,
@@ -98,6 +99,37 @@ const OP_LABEL: Record<ChangeSetOp["op"], string> = {
   add_fact: "正典の追加",
   update_work: "作品情報の更新",
 };
+
+const JOB_KIND_LABEL: Record<string, string> = {
+  orchestrator_turn: "対話",
+  generate_scene: "本文生成",
+  plan_work: "計画作成",
+  review_change: "変更レビュー",
+  smoke_generate: "疎通確認",
+};
+
+const JOB_STATUS_LABEL: Record<JobInfo["status"], string> = {
+  queued: "待機中",
+  leased: "実行中",
+  completed: "完了",
+  failed: "失敗",
+  cancelled: "中止",
+};
+
+const JOB_STATUS_BADGE: Record<JobInfo["status"], string> = {
+  queued: "badge badge--warn",
+  leased: "badge badge--accent",
+  completed: "badge badge--ok",
+  failed: "badge badge--warn",
+  cancelled: "badge",
+};
+
+/** 失敗理由は job.error、補足があれば payload.error も見る。 */
+function jobErrorText(job: JobInfo): string | null {
+  if (job.error) return job.error;
+  const payloadError = job.payload?.error;
+  return typeof payloadError === "string" ? payloadError : null;
+}
 
 const FINDING_SEV_LABEL: Record<string, string> = {
   low: "低",
@@ -874,6 +906,34 @@ function ChangesView({
             ) : null}
           </dl>
 
+          {sel.prev_settings ? (
+            <>
+              <strong>適用前の憲章 / ポリシー</strong>
+              <dl className="contract">
+                <dt>憲章</dt>
+                <dd>
+                  {sel.prev_settings.charter !== null ? (
+                    <pre className="json-view">
+                      {JSON.stringify(sel.prev_settings.charter, null, 2)}
+                    </pre>
+                  ) : (
+                    <span className="muted">未設定</span>
+                  )}
+                </dd>
+                <dt>ポリシー</dt>
+                <dd>
+                  {sel.prev_settings.policy !== null ? (
+                    <pre className="json-view">
+                      {JSON.stringify(sel.prev_settings.policy, null, 2)}
+                    </pre>
+                  ) : (
+                    <span className="muted">未設定</span>
+                  )}
+                </dd>
+              </dl>
+            </>
+          ) : null}
+
           {sel.findings.length > 0 ? (
             <>
               <strong>レビュー結果</strong>
@@ -1248,6 +1308,20 @@ export default function WorkPage({
     }
   };
 
+  /** 失敗/中止した対話ジョブの再送 (新規メッセージ+ジョブが作られる)。 */
+  const resendJob = async (jobId: string) => {
+    setSending(true);
+    setError(null);
+    try {
+      await api.resendJob(workId, jobId);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "再送に失敗しました");
+    } finally {
+      setSending(false);
+    }
+  };
+
   const decideProposal = async (id: string, action: "approve" | "reject") => {
     setSending(true);
     setError(null);
@@ -1570,6 +1644,45 @@ export default function WorkPage({
             <p className="side-note">
               作品情報はオーケストレーターとの対話で更新されます。
             </p>
+            {detail.recent_jobs.length > 0 ? (
+              <div className="job-history">
+                <strong>実行履歴</strong>
+                <ul>
+                  {detail.recent_jobs.map((j) => {
+                    const errText = jobErrorText(j);
+                    const resendable =
+                      j.kind === "orchestrator_turn" &&
+                      (j.status === "failed" || j.status === "cancelled");
+                    return (
+                      <li key={j.id}>
+                        <div>
+                          <span className={JOB_STATUS_BADGE[j.status]}>
+                            {JOB_STATUS_LABEL[j.status]}
+                          </span>{" "}
+                          {JOB_KIND_LABEL[j.kind] ?? j.kind}{" "}
+                          <span className="muted">
+                            {formatDateTime(j.created_at)}
+                          </span>
+                        </div>
+                        {errText ? (
+                          <p className="job-error">{errText}</p>
+                        ) : null}
+                        {resendable ? (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={sending || executorStale}
+                            onClick={() => void resendJob(j.id)}
+                          >
+                            もう一度送信
+                          </button>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
           </aside>
         </div>
       ) : null}

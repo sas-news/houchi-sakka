@@ -1,5 +1,6 @@
 import type {
   ChangeSetInfo,
+  ChatMessageInfo,
   JobInfo,
   KeyInfo,
   ProposalInfo,
@@ -109,4 +110,10 @@ export const api = {
     ),
   unlistRelease: (id: string) =>
     call<{ release: ReleaseInfo }>(`/api/releases/${id}/unlist`, "POST"),
+  /** 失敗/中止した対話ジョブを元メッセージと同じ内容で新規ジョブとして再送。 */
+  resendJob: (workId: string, jobId: string) =>
+    call<{ message: ChatMessageInfo; job: JobInfo }>(
+      `/api/works/${workId}/jobs/${jobId}/resend`,
+      "POST",
+    ),
 };
