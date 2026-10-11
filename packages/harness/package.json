@@ -20,6 +20,7 @@
     "@houchi/prompts": "workspace:*",
     "@houchi/providers": "workspace:*",
     "@houchi/skills": "workspace:*",
+    "@houchi/validators": "workspace:*",
     "zod": "^3.25.76"
   },
   "devDependencies": {

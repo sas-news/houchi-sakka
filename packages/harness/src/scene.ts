@@ -15,6 +15,7 @@ import {
   type CriticOutput,
   type WriterOutput,
 } from "@houchi/skills";
+import { toCriticOutput, validateProse } from "@houchi/validators";
 import type { JobHandler } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
@@ -52,8 +53,8 @@ function countSeverities(critique: CriticOutput): {
  *
  * 段構成 (各段の出力は checkpoint に永続化、resume で再実行しない):
  *   1. write    — writer スキルでドラフト生成 (checkpoint: draft)
- *   2. critique — critic スキルで契約適合・禁止事項・正典矛盾を検査
- *                 (checkpoint: critique)
+ *   2. critique — 決定的検査 (validators) + critic スキルで契約適合・
+ *                 禁止事項・正典矛盾を検査 (checkpoint: critique)
  *   3. revise   — severity=high の violation がある時だけ、writer に
  *                 critique を渡して1回書き直し (checkpoint: final)
  *   4. 確定     — scene_revisions 保存 → canon_facts_new 追加 →
@@ -119,10 +120,18 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
     await ctx.postProgress("status", { step: "resume_from_checkpoint" });
   }
 
-  // --- 2. critique: critic スキルで検査 ---------------------------------
+  // --- 2. critique: 決定的検査 + critic スキル ---------------------------
+  // validators は LLM を通さない確定検査 (spec §10)。その findings を critic
+  // の出力にマージし、severity=high があれば revise 判定にそのまま使う。
   let critique = checkpoint.critique as CriticOutput | undefined;
   if (!critique) {
-    critique = await runSkillStep(ctx, {
+    const deterministic = toCriticOutput(
+      validateProse(draft.prose_md, {
+        contract: contract.payload,
+        canonFacts: sceneCtx.canon_facts,
+      }),
+    );
+    const aiCritique = await runSkillStep(ctx, {
       job,
       skill: criticSkill,
       input: {
@@ -136,6 +145,10 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
       keyRef: payload.key_ref,
       step: "critique",
     });
+    critique = {
+      violations: [...deterministic.violations, ...aiCritique.violations],
+      notes: [...deterministic.notes, ...aiCritique.notes],
+    };
     await ctx.saveCheckpoint({ critique });
   }
 

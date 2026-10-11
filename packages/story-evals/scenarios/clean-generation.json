@@ -1,0 +1,37 @@
+{
+  "kind": "generation",
+  "name": "契約適合のクリーン生成",
+  "description": "契約に適合した本文では high が出ず、必須イベントの被覆率が満たされること (回帰の基準線)。",
+  "scene_title": "廃線ホーム",
+  "scene_purpose": "導入",
+  "contract": {
+    "role": "導入",
+    "pov": "一人称",
+    "required_events": ["雨上がり", "切符を拾う"],
+    "forbidden": ["黒猫の正体が明かされる"],
+    "knowledge_notes": "",
+    "connections": ""
+  },
+  "canon_facts": [
+    { "statement": "汽車はもう走っていない", "provenance": "orchestrator" },
+    {
+      "statement": "[SECRET] 駅長は裏で切符を盗んでいる",
+      "provenance": "orchestrator"
+    }
+  ],
+  "writer_response": {
+    "prose_md": "雨上がりのホームで、私は濡れた切符を拾った。汽車はもう走っていない。線路の錆だけが赤い。",
+    "canon_facts_new": ["ホームの線路は錆びている"],
+    "depends_on": [
+      { "target_kind": "canon_fact", "target_ref": "汽車はもう走っていない" }
+    ]
+  },
+  "critic_response": {
+    "violations": [],
+    "notes": ["文体は安定している"]
+  },
+  "expect": {
+    "max_high": 0,
+    "required_events_missing": 0
+  }
+}

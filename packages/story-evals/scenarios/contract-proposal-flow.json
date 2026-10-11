@@ -1,0 +1,37 @@
+{
+  "kind": "dialogue",
+  "name": "契約提案フロー",
+  "description": "計画起票→Writing Contract 提案→保留中の提案がある間は再提案しない (spec §3.3, P8 提案と確定の分離)。",
+  "work": {
+    "title": "終着駅の黒猫",
+    "premise": "寂れた地方の終着駅を舞台にしたミステリ",
+    "genre": "ミステリ",
+    "status": "active"
+  },
+  "canon_facts": [{ "statement": "舞台は終着駅", "provenance": "orchestrator" }],
+  "turns": [
+    {
+      "user": "話の構成を立てて",
+      "stub_response": "構成案をプランナーに依頼します。できあがったら提案カードで見せますね。\n<<RUN_PLAN>>",
+      "expect": {
+        "markers": ["RUN_PLAN"],
+        "forbidden_markers": ["PROPOSE"]
+      }
+    },
+    {
+      "user": "1話のシーン1を書きたい。導入で、一人称、雨上がりと切符を拾う場面、黒猫の正体はまだ明かさない",
+      "stub_response": "シーン1の契約を提案します。内容を確認してください。\n<<PROPOSE {\"episode_title\": \"第1話\", \"scene_title\": \"廃線ホーム\", \"scene_purpose\": \"導入\", \"contract\": {\"role\": \"導入\", \"pov\": \"一人称\", \"required_events\": [\"雨上がり\", \"切符を拾う\"], \"forbidden\": [\"黒猫の正体が明かされる\"], \"knowledge_notes\": \"\", \"connections\": \"\"}}>>",
+      "expect": {
+        "markers": ["PROPOSE"],
+        "contains": ["契約"]
+      }
+    },
+    {
+      "user": "ついでにシーン2の提案も出して",
+      "stub_response": "先ほどのシーン1の契約がまだ承認待ちです。まずそちらを承認・修正・却下してから次の提案に進みましょう。",
+      "expect": {
+        "forbidden_markers": ["PROPOSE", "RUN_PLAN"]
+      }
+    }
+  ]
+}

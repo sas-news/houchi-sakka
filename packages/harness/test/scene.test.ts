@@ -239,7 +239,61 @@ describe("generate_scene 多段パイプライン", () => {
       critique_summary: { high: number; notes: number };
     };
     expect(result.revised).toBe(false);
-    expect(result.critique_summary.notes).toBe(1);
+    // critic の note 1件 + 決定的検査の info (必須イベント「雨上がり」未言及) 1件
+    expect(result.critique_summary.notes).toBe(2);
+  });
+
+  it("決定的検査が禁止事項違反を検出 → critic が空でも revise が走る", async () => {
+    const provider = new StubProvider({
+      respond: (req) => {
+        const joined = req.input.map((m) => m.content).join("\n");
+        if (joined.includes("執筆担当")) {
+          const revised = joined.includes("この指摘を直して書き直してください");
+          return JSON.stringify({
+            prose_md: revised
+              ? "雨上がりのホーム。汽車は来ない。"
+              : "彼は黒猫の正体が明かされるのを見た。雨上がりだった。",
+            canon_facts_new: [],
+            depends_on: [],
+          });
+        }
+        // critic (AI検査) は違反なしを返す — 検出は validators だけ。
+        if (joined.includes("検査担当")) {
+          return JSON.stringify({ violations: [], notes: [] });
+        }
+        return "{}";
+      },
+    });
+    const revisions: SceneRevision[] = [];
+    const completed: unknown[] = [];
+    const ctx = makeCtx({
+      provider,
+      store: { payload: { ...PAYLOAD } },
+      sceneCtx: sceneCtx({
+        ...CONTRACT,
+        payload: {
+          ...CONTRACT.payload,
+          forbidden: ["黒猫の正体が明かされる"],
+        },
+      }),
+      revisions,
+      completed,
+    });
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    // write + critique + revise = 3回 (validators の high が revise を駆動)
+    expect(provider.calls).toBe(3);
+    const doc = revisions[0]!.content_json as {
+      content: { content: { text: string }[] }[];
+    };
+    expect(doc.content[0]!.content[0]!.text).toBe(
+      "雨上がりのホーム。汽車は来ない。",
+    );
+    const result = completed[0] as {
+      revised: boolean;
+      critique_summary: { high: number };
+    };
+    expect(result.revised).toBe(true);
+    expect(result.critique_summary.high).toBe(1);
   });
 
   it("critic が high 指摘 → revise を実行し改稿文を保存", async () => {

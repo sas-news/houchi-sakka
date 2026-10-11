@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "evals": "pnpm -r build && pnpm --filter @houchi/story-evals evals"
   },
   "devDependencies": {
     "typescript": "~5.9.3"

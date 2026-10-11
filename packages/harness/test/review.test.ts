@@ -186,6 +186,50 @@ describe("review_change ジョブ", () => {
     expect(messages[0]!.content).toContain("1件のシーン");
   });
 
+  it("決定的検査が秘密の漏洩を検出し critic に頼らず findings に記録する", async () => {
+    const provider = new StubProvider({
+      respond: () => JSON.stringify({ violations: [], notes: [] }),
+    });
+    const findings: { change_set_id: string; findings: unknown[] }[] = [];
+    const messages: { role: string; content: string }[] = [];
+    const ctx = makeCtx({ provider, findings, messages });
+    ctx.fetchChangeSetContext = async () => ({
+      change_set: CHANGE_SET,
+      work: WORK,
+      thread_id: "t1",
+      canon_facts: [
+        {
+          id: "f9",
+          work_id: "w1",
+          statement: "[SECRET] 駅長は裏で切符を盗んでいる",
+          provenance: "orchestrator",
+          valid_from_rev: 1,
+          valid_to_rev: null,
+          created_at: 1,
+        },
+      ],
+      scenes: [
+        {
+          id: "s1",
+          title: "廃線ホーム",
+          prose_md: "その夜、駅長は裏で切符を盗んでいるのを彼女は目撃した。",
+          contract: null,
+        },
+      ],
+    });
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    const recorded = findings[0]!.findings as {
+      kind: string;
+      severity: string;
+      summary: string;
+      scene_id: string;
+    }[];
+    const leak = recorded.find((f) => f.severity === "high");
+    expect(leak).toBeDefined();
+    expect(leak!.summary).toContain("canon.secret_leak");
+    expect(messages[0]!.content).toContain("衝突");
+  });
+
   it("本文のないシーンは検査をスキップする", async () => {
     const provider = new StubProvider({ text: "{}" });
     const findings: { change_set_id: string; findings: unknown[] }[] = [];

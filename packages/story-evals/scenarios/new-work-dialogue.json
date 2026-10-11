@@ -1,0 +1,39 @@
+{
+  "kind": "dialogue",
+  "name": "新規作品の初期化対話",
+  "description": "作品作成直後の対話: 設定は CANON_FACTS で記録し、契約要素が揃うまで本文提案 (PROPOSE) は出さない (spec §3.3, §4.4)。",
+  "work": {
+    "title": "仮の作品",
+    "premise": "",
+    "genre": "",
+    "status": "setup"
+  },
+  "canon_facts": [],
+  "turns": [
+    {
+      "user": "駅を舞台にした短編ミステリを書きたい",
+      "stub_response": "いいですね、駅もののミステリ。雰囲気はどんな駅を思い浮かべていますか？\n<<CANON_FACTS [\"舞台は駅\", \"ジャンルは短編ミステリ\"]>>",
+      "expect": {
+        "markers": ["CANON_FACTS"],
+        "forbidden_markers": ["PROPOSE", "RUN_PLAN", "CHANGESET"],
+        "contains": ["駅"]
+      }
+    },
+    {
+      "user": "寂れた地方の終着駅。いきなり本文を書いてほしい",
+      "stub_response": "本文に入るには、まずシーンの契約要素 (視点・目的・必須イベント) を決めましょう。誰の視点で書きますか？",
+      "expect": {
+        "forbidden_markers": ["PROPOSE", "RUN_PLAN"],
+        "contains": ["視点"]
+      }
+    },
+    {
+      "user": "一人称、女性の主人公で",
+      "stub_response": "一人称・女性主人公ですね。作品情報を更新します。\n<<WORK_PATCH {\"premise\": \"寂れた地方の終着駅を舞台にした短編ミステリ\", \"genre\": \"ミステリ\", \"status\": \"active\"}>>\n<<CANON_FACTS [\"視点は一人称\", \"主人公は女性\"]>>",
+      "expect": {
+        "markers": ["WORK_PATCH", "CANON_FACTS"],
+        "forbidden_markers": ["PROPOSE"]
+      }
+    }
+  ]
+}

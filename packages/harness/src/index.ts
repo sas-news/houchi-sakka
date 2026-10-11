@@ -28,6 +28,9 @@ import { runPlanWork } from "./plan.js";
 import { runReviewChange } from "./review.js";
 import { runGenerateScene, type SceneContextData } from "./scene.js";
 
+// スキル実行ループは story-evals など外部からも使えるよう公開する。
+export { extractJson, runSkillStep } from "./skills.js";
+
 /**
  * packages/harness — ジョブ種別ごとの永続ステートマシン (spec §8.1 Harness)。
  * runner は薄い実行ループで、状態遷移とチェックポイント判定はここに置く。
