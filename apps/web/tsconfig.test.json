@@ -6,7 +6,8 @@
       "@houchi/database": ["../../packages/database/src/index.ts"],
       "@houchi/database/testing": ["../../packages/database/src/testing.ts"],
       "@houchi/secrets": ["../../packages/secrets/src/index.ts"],
-      "@houchi/prompts": ["../../packages/prompts/src/index.ts"]
+      "@houchi/prompts": ["../../packages/prompts/src/index.ts"],
+      "@houchi/workspace": ["../../packages/workspace/src/index.ts"]
     }
   }
 }

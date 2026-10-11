@@ -1,0 +1,17 @@
+# Docker build context (リポジトリルート) から除外するもの
+.git
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+build
+**/build
+.wrangler
+**/.wrangler
+.react-router
+coverage
+*.log
+.dev.vars
+.env

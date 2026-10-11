@@ -147,6 +147,95 @@ pnpm -r test
 
    **STUB_SCENARIO=phase1b での確認手順**: 対話1往復目 → WORK_PATCH+CANON_FACTS で前提と正典を確定。2往復目に「書いて」等の発言 → PROPOSE 提案カードが出る。「承認して本文を生成」→ stub の段落本文がストリームされ、「本文」タブで読める。「書き直しを依頼」で第2稿、「手編集」で manual_edit リビジョンを試せる。
 
+## デプロイ
+
+`apps/web` は Cloudflare Workers + D1、`apps/runner` は常駐プロセスなので Fly.io 等の Docker ホストに置く。以下は手元で進める順番の手順 (最後に GitHub Actions 化する方法もある)。
+
+### 1. 前準備 (初回のみ)
+
+1. [Cloudflare](https://dash.cloudflare.com/) でアカウントを作り、Workers を有効化する。
+2. リポジトリルートで `pnpm install && pnpm -r build`。
+3. `cd apps/web && pnpm exec wrangler login` — ブラウザが開いて Cloudflare にログインできる。
+4. 本番用の D1 データベースを作る:
+
+   ```bash
+   pnpm exec wrangler d1 create houchi-sakka
+   ```
+
+   出力される `database_id` を `apps/web/wrangler.production.toml` の
+   `database_id = "REPLACE_WITH_PRODUCTION_DATABASE_ID"` の部分に貼り付けて、コミットする。
+
+### 2. secrets の投入
+
+Workers の秘密値は `wrangler secret put` で入れる (toml には平文を書かない):
+
+```bash
+cd apps/web
+openssl rand -base64 32   # → APP_SECRET_KEY 用の値
+openssl rand -base64 32   # → EXECUTOR_TOKEN 用の値 (runner 側にも同じ値を設定する)
+
+pnpm exec wrangler secret put APP_SECRET_KEY --config wrangler.production.toml
+pnpm exec wrangler secret put EXECUTOR_TOKEN --config wrangler.production.toml
+
+# OAuth ログインを使う場合のみ (未設定ならそのボタンは出ない):
+pnpm exec wrangler secret put GOOGLE_CLIENT_ID --config wrangler.production.toml
+pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.production.toml
+pnpm exec wrangler secret put GITHUB_CLIENT_ID --config wrangler.production.toml
+pnpm exec wrangler secret put GITHUB_CLIENT_SECRET --config wrangler.production.toml
+```
+
+- `APP_SECRET_KEY` は BYO キーの AES-256-GCM 暗号化と better-auth の署名 secret を兼ねる。
+- **`DEV_LOGIN_ENABLED` は本番では絶対に設定しない** (誰でも `/api/dev/login` でログインできる抜け道になる)。
+- 秘密でない環境変数は `wrangler.production.toml` の `[vars]` に書く (`DEFAULT_MODEL` など)。
+
+### 3. マイグレーション + デプロイ
+
+```bash
+pnpm install && pnpm -r build   # リポジトリルートで
+cd apps/web
+pnpm d1:migrate:prod            # packages/database/migrations を本番 D1 に順番適用
+pnpm deploy:prod                # Workers にデプロイ
+```
+
+デプロイ先は `https://houchi-sakka-web.<アカウント>.workers.dev` になる。
+カスタムドメインは Cloudflare ダッシュボードの Worker → Settings → Domains から付けられる。
+マイグレーションは適用済みのものが `d1_migrations` テーブルで管理されるので、新しい SQL ファイルが増えた時にまた `pnpm d1:migrate:prod` を実行するだけでよい。
+
+### 4. GitHub Actions で自動デプロイ
+
+`.github/workflows/deploy.yml` が main への push (または Actions 画面からの手動実行) で、上記の「マイグレーション → デプロイ」を自動で回す。GitHub リポジトリの **Settings → Secrets and variables → Actions** に以下を登録する:
+
+- `CF_API_TOKEN` — Cloudflare → My Profile → API Tokens で「Workers Scripts と D1 の編集」権限を持つトークンを作成
+- `CF_ACCOUNT_ID` — Cloudflare ダッシュボードの右側に表示されているアカウント ID
+
+先に 1〜2 の「D1 作成」「database_id 記入」「wrangler secret put」だけ手元で済ませておくこと。
+テスト・型チェックは `.github/workflows/ci.yml` が PR / main push で `pnpm -r typecheck` + `pnpm -r test` を実行する。
+
+### 5. apps/runner のホスティング (Fly.io)
+
+実行体は常駐ループなので Workers には載らない。`apps/runner/Dockerfile` とリポジトリルートの `fly.toml` を用意してある。
+
+```bash
+fly auth login
+fly apps create houchi-sakka-runner        # 初回のみ (fly.toml の app 名と合わせる)
+fly secrets set \
+  WEB_BASE_URL=https://houchi-sakka-web.<アカウント>.workers.dev \
+  EXECUTOR_TOKEN=<web と同じトークン>
+fly deploy                                 # リポジトリルートで実行 (Docker build context = ルート)
+```
+
+- `WEB_BASE_URL` … Workers の公開 URL。`EXECUTOR_TOKEN` … web 側と同じ共有トークン。
+- **`RUNNER_PROVIDER` は設定しない** (=openai。実キーはユーザーがサイトに登録した BYO キーを DB 経由で resolve する。`stub` は実キーなしで全ジョブをダミー応答で回すスモーク用)。
+- 動作確認は `fly logs` / `fly status`。1台動かせばよい (同一 work_ref のジョブは直列化されるので複数台でも安全だが不要)。
+- Fly.io 以外 (Render / 自分の VPS 等) でも、リポジトリルートで `docker build -f apps/runner/Dockerfile -t houchi-sakka-runner .` → `docker run -d --restart=always -e WEB_BASE_URL=... -e EXECUTOR_TOKEN=... houchi-sakka-runner` で同じように動く。
+
+### 6. OAuth アプリの設定 (Google / GitHub ログインを使う場合)
+
+- **Google**: Cloud Console → OAuth クライアント (Web) → 承認済みリダイレクト URI に `https://<デプロイ先ドメイン>/api/auth/callback/google` を登録し、クライアント ID/シークレットを `wrangler secret put`。
+- **GitHub**: Settings → Developer settings → OAuth Apps → Callback URL に `https://<デプロイ先ドメイン>/api/auth/callback/github` を登録し、同様に `wrangler secret put`。
+
+どちらも未設定ならそのログインボタンは表示されない。
+
 ## チェックポイント / 再開の仕組み
 
 `smoke_generate` / `orchestrator_turn` とも provider の結果を `payload.checkpoint` に保存してから `complete` する2段階方式 (結果永続化 → 完了マーク)。orchestrator_turn はさらに `assistant_message_id` をチェックポイントに持ち、`chat_messages.job_id` のユニーク制約でメッセージの二重確定を防ぐ。
