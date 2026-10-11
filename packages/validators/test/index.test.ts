@@ -49,7 +49,6 @@ describe("checkForbidden", () => {
     // 構成要素 (黒猫/正体/明か) が全部出るが完全一致ではない
     const r = checkForbidden("黒猫は正体を明かしてしまった。", {
       forbidden: ["黒猫の正体が明かされる"],
-      required_events: [],
     });
     const f = r.findings.find((x) => x.rule === "contract.forbidden");
     expect(f?.severity).toBe("medium");
