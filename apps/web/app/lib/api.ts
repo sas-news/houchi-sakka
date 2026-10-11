@@ -38,6 +38,10 @@ async function call<T>(
   const data = (await res.json().catch(() => ({}))) as {
     error?: { code?: string; message?: string };
   };
+  // セッション切れはその場でログイン画面へ (呼び出し元で個別処理しない)。
+  if (res.status === 401 && typeof window !== "undefined") {
+    window.location.assign("/login");
+  }
   if (!res.ok) {
     throw new ApiError(
       res.status,
@@ -77,11 +81,11 @@ export const api = {
   getChanges: (id: string) =>
     call<{ change_sets: ChangeSetInfo[] }>(`/api/works/${id}/changes`),
   /** 変更セットの承認 (force=true で却下済み含め強制適用)。 */
-  approveChangeSet: (id: string, force = false) =>
+  approveChangeSet: (id: string, force = false, reason?: string) =>
     call<{ change_set: ChangeSetInfo; job: JobInfo | null }>(
       `/api/change-sets/${id}/approve`,
       "POST",
-      { force },
+      reason ? { force, reason } : { force },
     ),
   rejectChangeSet: (id: string) =>
     call<{ change_set: ChangeSetInfo }>(

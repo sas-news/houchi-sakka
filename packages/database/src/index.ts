@@ -68,7 +68,11 @@ export interface DbLike {
 export class RepoError extends Error {
   override name = "RepoError";
   constructor(
-    public readonly code: "not_found" | "lease_conflict" | "internal",
+    public readonly code:
+      | "not_found"
+      | "lease_conflict"
+      | "conflict"
+      | "internal",
     message: string,
   ) {
     super(message);
@@ -448,6 +452,22 @@ export async function listKeysByOwner(
         ORDER BY created_at ASC`,
   )) as Row[];
   return rows.map(rowToKey);
+}
+
+/**
+ * キーごとの使用中作品数 (works.key_ref → provider_keys.id)。
+ * キー削除時の影響表示用 (spec §9: 削除の影響を案内する)。
+ */
+export async function listKeyUsageCounts(
+  db: DbLike,
+  ownerRef: string,
+): Promise<Map<string, number>> {
+  const rows = (await db.all(sql`
+    SELECT key_ref AS k, COUNT(*) AS n FROM works
+    WHERE owner_ref = ${ownerRef} AND key_ref IS NOT NULL
+    GROUP BY key_ref
+  `)) as Row[];
+  return new Map(rows.map((r) => [String(r.k), Number(r.n)]));
 }
 
 /** 所有者限定で削除。他人のキーは消せない (対象なし → false)。 */
@@ -1203,6 +1223,8 @@ function rowToChangeSet(r: Row): ChangeSet {
     status: r.status,
     impact: JSON.parse(String(r.impact)),
     force: r.force ?? 0,
+    force_reason: r.force_reason ?? null,
+    base_rev: r.base_rev ?? null,
     message_id: r.message_id ?? null,
     created_at: r.created_at,
     decided_at: r.decided_at ?? null,
@@ -1240,6 +1262,8 @@ export async function createChangeSet(
     status?: string;
     impact: ChangeSetImpact;
     force?: number;
+    /** 提案時点の works.canon_rev (spec §8.3 楽観的競合検出用)。 */
+    baseRev?: number | null;
     messageId?: string | null;
     decidedAt?: number | null;
     appliedAt?: number | null;
@@ -1249,11 +1273,12 @@ export async function createChangeSet(
   const rows = (await db.all(sql`
     INSERT INTO change_sets
       (id, work_id, kind, title, description, ops, status, impact, force,
-       message_id, created_at, decided_at, applied_at)
+       base_rev, message_id, created_at, decided_at, applied_at)
     VALUES (${id}, ${input.workId}, ${input.kind ?? "normal"},
             ${input.title}, ${input.description ?? ""},
             ${JSON.stringify(input.ops)}, ${input.status ?? "proposed"},
             ${JSON.stringify(input.impact)}, ${input.force ?? 0},
+            ${input.baseRev ?? null},
             ${input.messageId ?? null}, ${now()},
             ${input.decidedAt ?? null}, ${input.appliedAt ?? null})
     ON CONFLICT DO NOTHING
@@ -1326,6 +1351,7 @@ export async function updateChangeSetState(
     status?: string;
     kind?: string;
     force?: number;
+    forceReason?: string | null | undefined;
     decidedAt?: number | null;
     appliedAt?: number | null;
   },
@@ -1337,6 +1363,7 @@ export async function updateChangeSetState(
       status = ${input.status ?? cur.status},
       kind = ${input.kind ?? cur.kind},
       force = ${input.force ?? cur.force},
+      force_reason = ${input.forceReason === undefined ? cur.force_reason : input.forceReason},
       decided_at = ${input.decidedAt === undefined ? cur.decided_at : input.decidedAt},
       applied_at = ${input.appliedAt === undefined ? cur.applied_at : input.appliedAt}
     WHERE id = ${input.id}
@@ -1607,7 +1634,7 @@ async function insertCanonFactRev(
  */
 export async function applyChangeSet(
   db: DbLike,
-  input: { changeSetId: string; force?: boolean },
+  input: { changeSetId: string; force?: boolean; reason?: string | null | undefined },
 ): Promise<{ changeSet: ChangeSetWithFindings; newCanonRev: number } | null> {
   const cs = await getChangeSetById(db, input.changeSetId);
   if (!cs) return null;
@@ -1620,6 +1647,21 @@ export async function applyChangeSet(
 
   const work = await getWorkById(db, cs.work_id);
   if (!work) return null;
+  // 楽観的競合 (spec §8.3): 提案時点から正典が変わっていたら通常承認は
+  // 拒否する。正典に触れる ops (fact 系) を含む提案だけを対象にする
+  // (update_work だけの提案が毎回 force を要求されるのを防ぐ)。
+  const touchesCanon = cs.ops.some((op) => op.op !== "update_work");
+  if (
+    !input.force &&
+    touchesCanon &&
+    cs.base_rev !== null &&
+    cs.base_rev !== work.canon_rev
+  ) {
+    throw new RepoError(
+      "conflict",
+      "提案された時点から正典が変更されています。内容を確認してから「強制的に変更」で適用してください",
+    );
+  }
   const newRev = work.canon_rev + 1;
   const provenance = `change_set:${cs.id}`;
 
@@ -1669,6 +1711,7 @@ export async function applyChangeSet(
     status: "applied",
     kind,
     force: input.force ? 1 : cs.force,
+    forceReason: input.force ? (input.reason ?? null) : undefined,
     decidedAt: now(),
     appliedAt: now(),
   });

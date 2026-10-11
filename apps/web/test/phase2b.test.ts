@@ -244,11 +244,11 @@ describe("Phase 2b: 変更セット", () => {
     );
     expect(plain.status).toBe(400);
 
-    // force=true で強制適用
+    // force=true + 理由 で強制適用 (spec §5.4: 理由の記録は必須)
     const forced = await call(
       "POST",
       `/api/change-sets/${change_set.id}/approve`,
-      { force: true },
+      { force: true, reason: "却下の誤りを取り消す" },
       { token: null, cookie },
     );
     expect(forced.status).toBe(200);
@@ -418,5 +418,134 @@ describe("Phase 2b: 変更セット", () => {
     ).json()) as { content: string };
     expect(history.content).toContain("汽車はもう走っていない");
     expect(history.content).toContain("rev");
+  });
+});
+
+describe("spec gap-fill: 強制適用の理由記録・楽観的競合・キー使用数", () => {
+  it("正典に触れる変更セットは canon_rev が進むと承認で競合 (409) になる", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    await seedSceneWithDep(call, cookie, workId);
+
+    const mk = async (title: string) => {
+      const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+        title,
+        ops: [{ op: "add_fact", statement: `事実:${title}` }],
+      });
+      const { change_set } = (await res.json()) as {
+        change_set: { id: string; base_rev: number | null };
+      };
+      return change_set;
+    };
+    const a = await mk("A案");
+    const b = await mk("B案");
+    // 提案時点の canon_rev が記録されている
+    expect(a.base_rev).not.toBeNull();
+    expect(b.base_rev).toBe(a.base_rev);
+
+    const okRes = await call(
+      "POST",
+      `/api/change-sets/${a.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(okRes.status).toBe(200);
+
+    // B は base_rev が古いまま → 通常承認は競合で拒否
+    const conf = await call(
+      "POST",
+      `/api/change-sets/${b.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(conf.status).toBe(409);
+    // 競合しても status は proposed のまま
+    const detail = (await (
+      await call("GET", `/api/works/${workId}/changes`, undefined, {
+        token: null,
+        cookie,
+      })
+    ).json()) as { change_sets: { id: string; status: string }[] };
+    expect(
+      detail.change_sets.find((c) => c.id === b.id)?.status,
+    ).toBe("proposed");
+  });
+
+  it("強制適用は理由なしだと 400、理由付きで force_override と理由が記録される", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    await seedSceneWithDep(call, cookie, workId);
+
+    const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "強制したい変更",
+      ops: [{ op: "add_fact", statement: "強制で足す事実" }],
+    });
+    const { change_set } = (await res.json()) as {
+      change_set: { id: string };
+    };
+
+    const noReason = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      { force: true },
+      { token: null, cookie },
+    );
+    expect(noReason.status).toBe(400);
+
+    const forced = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      { force: true, reason: "対話を待たずに直したい" },
+      { token: null, cookie },
+    );
+    expect(forced.status).toBe(200);
+    const { change_set: applied } = (await forced.json()) as {
+      change_set: {
+        kind: string;
+        force: number;
+        force_reason: string | null;
+      };
+    };
+    expect(applied.kind).toBe("force_override");
+    expect(applied.force).toBe(1);
+    expect(applied.force_reason).toBe("対話を待たずに直したい");
+  });
+
+  it("GET /api/keys は使用中の作品数 works_using を返す", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const cookie = await devLogin(call);
+    const keyRes = await call(
+      "POST",
+      "/api/keys",
+      { label: "メイン", provider: "openai", api_key: "sk-test" },
+      { token: null, cookie },
+    );
+    const { key } = (await keyRes.json()) as { key: { id: string } };
+    const workRes = await call(
+      "POST",
+      "/api/works",
+      { title: "キー使用中の作品" },
+      { token: null, cookie },
+    );
+    const { work } = (await workRes.json()) as { work: { id: string } };
+    const patch = await call(
+      "PATCH",
+      `/api/works/${work.id}/settings`,
+      { key_id: key.id },
+      { token: null, cookie },
+    );
+    expect(patch.status).toBe(200);
+
+    const list = await call("GET", "/api/keys", undefined, {
+      token: null,
+      cookie,
+    });
+    const { keys } = (await list.json()) as {
+      keys: { id: string; works_using: number }[];
+    };
+    expect(keys.find((k) => k.id === key.id)?.works_using).toBe(1);
   });
 });
