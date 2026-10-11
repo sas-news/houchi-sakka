@@ -33,6 +33,8 @@ import type {
 export const meta: MetaFunction = () => [{ title: "作品 | 放置作家" }];
 
 const POLL_MS = 1500;
+/** 実行体がジョブを取らないままこの時間を超えたら「応答なし」とみなす。 */
+const EXECUTOR_STALE_MS = 120_000;
 
 const STATUS_LABEL: Record<WorkInfo["status"], string> = {
   setup: "初期化中",
@@ -144,7 +146,7 @@ const STEP_LABEL: Record<string, string> = {
   resume_from_checkpoint: "前回の状態から再開しています",
   persist_message: "返答を記録しています",
   apply_work_patch: "作品情報を更新しています",
-  add_canon_facts: "正典メモを記録しています",
+  add_canon_facts: "正典を記録しています",
   create_proposal: "提案を作成しています",
   persist_revision: "本文を保存しています",
   record_dependencies: "依存関係を記録しています",
@@ -455,6 +457,9 @@ function ChangeSetCard({
           <p className="muted">
             レビュー: {openFindings}件の指摘あり — 「変更」タブで確認できます。
           </p>
+        ) : null}
+        {cs.force_reason ? (
+          <p className="muted">強制適用の理由: {cs.force_reason}</p>
         ) : null}
       </div>
       {cs.status === "proposed" ? (
@@ -1272,10 +1277,25 @@ export default function WorkPage({
   };
 
   const forceChangeSet = async (id: string) => {
+    // spec §5.4: 警告を表示し、変更理由の記録を要求する。
+    const ok = window.confirm(
+      "強制適用は通常の承認フローを迂回する緊急経路です。" +
+        "適用後にAIレビューが起動し、指摘は「変更」タブに残ります。実行しますか?",
+    );
+    if (!ok) return;
+    const input = window.prompt(
+      "変更理由を記録してください (監査記録に残ります)",
+    );
+    if (input === null) return;
+    const reason = input.trim();
+    if (reason.length === 0) {
+      setError("強制適用には変更理由の記録が必要です");
+      return;
+    }
     setSending(true);
     setError(null);
     try {
-      await api.approveChangeSet(id, true);
+      await api.approveChangeSet(id, true, reason);
       await refresh();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "操作に失敗しました");
@@ -1400,6 +1420,11 @@ export default function WorkPage({
   };
 
   const running = detail.active_job !== null;
+  // 実行体が lease せずキュー滞留が続く = 実行体オフラインの可能性
+  // (spec §3.4: Runner状態を画面に明示し対話・生成を止める)。
+  const executorStale =
+    detail.active_job?.job.status === "queued" &&
+    detail.active_job.job.created_at <= Date.now() - EXECUTOR_STALE_MS;
   const step = latestStep(detail);
   const stream = streamText(detail);
   const { work } = detail;
@@ -1450,6 +1475,12 @@ export default function WorkPage({
         ))}
       </div>
 
+      {executorStale ? (
+        <p className="notice">
+          実行体から応答がありません。対話・生成は実行体が戻るまで保留されます
+          (ローカルRunner利用時はRunnerの起動を確認してください)。
+        </p>
+      ) : null}
       {tab === "chat" ? (
         <div className="work-layout">
           <section>
@@ -1509,9 +1540,13 @@ export default function WorkPage({
                 name="content"
                 required
                 maxLength={20000}
+                disabled={executorStale}
+                placeholder={
+                  executorStale ? "実行体の応答を待っています" : undefined
+                }
               />
               <div className="form-actions">
-                <button type="submit" disabled={sending}>
+                <button type="submit" disabled={sending || executorStale}>
                   {running ? "送信 (キューに追加)" : "送信"}
                 </button>
               </div>
@@ -1593,7 +1628,7 @@ export default function WorkPage({
               )}
               {prose.canon_facts.length > 0 ? (
                 <div className="card canon-card">
-                  <strong>正典メモ</strong>
+                  <strong>正典</strong>
                   <ul>
                     {prose.canon_facts.map((f) => (
                       <li key={f.id}>{f.statement}</li>
@@ -1675,7 +1710,7 @@ export default function WorkPage({
       {tab === "settings" ? (
         <section>
           <div className="card">
-            <h2>創作憲章 / 作風ポリシー</h2>
+            <h2>創作憲章 / 執筆ポリシー</h2>
             {work.charter === null && work.policy === null ? (
               <p className="muted">
                 未設定です。対話で固まった内容がここに反映されます。
@@ -1692,7 +1727,7 @@ export default function WorkPage({
                 ) : null}
                 {work.policy !== null ? (
                   <>
-                    <strong>作風ポリシー</strong>
+                    <strong>執筆ポリシー</strong>
                     <pre className="json-view">
                       {JSON.stringify(work.policy, null, 2)}
                     </pre>
@@ -1700,6 +1735,10 @@ export default function WorkPage({
                 ) : null}
               </>
             )}
+            <p className="muted">
+              創作憲章・執筆ポリシーは対話の中で固めて更新します
+              (この画面での手編集はありません)。
+            </p>
           </div>
           <form onSubmit={(e) => void saveSettings(e)} className="card">
             <h2>生成設定</h2>

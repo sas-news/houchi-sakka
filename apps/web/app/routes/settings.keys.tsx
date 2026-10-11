@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, type MetaFunction , type RouterContextProvider } from "react-router";
-import { listKeysByOwner } from "@houchi/database";
+import { listKeyUsageCounts, listKeysByOwner } from "@houchi/database";
 import { requireUser } from "../lib/server";
 import { cloudflareContext, depsContext } from "../lib/context";
 import type { KeyInfo } from "../lib/types";
@@ -22,8 +22,13 @@ export async function loader({
   request: Request;
 }) {
   const user = await requireUser(context, request);
-  const keys = (await listKeysByOwner(context.get(depsContext).db, user.id)).map(
-    ({ ciphertext: _drop, ...pub }) => pub,
+  const db = context.get(depsContext).db;
+  const usage = await listKeyUsageCounts(db, user.id);
+  const keys = (await listKeysByOwner(db, user.id)).map(
+    ({ ciphertext: _drop, ...pub }) => ({
+      ...pub,
+      works_using: usage.get(pub.id) ?? 0,
+    }),
   );
   return { keys };
 }
@@ -65,10 +70,15 @@ export default function KeysPage({
     navigate(0);
   };
 
-  const remove = async (id: string, label: string) => {
-    if (!window.confirm(`キー「${label}」を削除しますか?`)) return;
+  const remove = async (k: KeyInfo) => {
+    const inUse = k.works_using ?? 0;
+    const warn =
+      inUse > 0
+        ? `\nこのキーを使っている作品が ${inUse} 件あります。削除するとそれらの作品で対話・生成・レビューが止まります。`
+        : "";
+    if (!window.confirm(`キー「${k.label}」を削除しますか?${warn}`)) return;
     setError(null);
-    const res = await fetch(`/api/keys/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/keys/${k.id}`, { method: "DELETE" });
     if (!res.ok) {
       setError("削除に失敗しました");
       return;
@@ -93,6 +103,8 @@ export default function KeysPage({
           キーは暗号化して保存されます。登録後に平文を再表示することは
           ありません。漏えい時の影響を減らすため、利用量の上限がある
           制限付きキーや、プロジェクト別に分けたキーの発行を推奨します。
+          OpenAI はプロジェクト別キー、Anthropic はワークスペース別の
+          発行でスコープを絞れます。
         </p>
         <form onSubmit={(e) => void submit(e)}>
           <label htmlFor="provider">プロバイダー</label>
@@ -141,11 +153,16 @@ export default function KeysPage({
                 <div className="key-date">
                   登録日: {new Date(k.created_at).toLocaleString("ja-JP")}
                 </div>
+                {(k.works_using ?? 0) > 0 ? (
+                  <div className="key-date">
+                    使用中の作品: {k.works_using} 件
+                  </div>
+                ) : null}
               </div>
               <button
                 type="button"
                 className="danger btn-sm"
-                onClick={() => void remove(k.id, k.label)}
+                onClick={() => void remove(k)}
               >
                 削除
               </button>

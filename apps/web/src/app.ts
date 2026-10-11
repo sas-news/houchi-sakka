@@ -90,6 +90,7 @@ import {
   listChangeSetsByWork,
   listContractsByWork,
   listEpisodesByWork,
+  listKeyUsageCounts,
   listKeysByOwner,
   listMessages,
   listOpenJobsByWork,
@@ -166,12 +167,12 @@ async function parseBody<T>(
   try {
     raw = await req.json();
   } catch {
-    return err(400, "bad_request", "invalid JSON body");
+    return err(400, "bad_request", "JSONの形式が正しくありません");
   }
   try {
     return schema.parse(raw);
   } catch {
-    return err(400, "bad_request", "request validation failed");
+    return err(400, "bad_request", "入力内容が不正です");
   }
 }
 
@@ -183,10 +184,14 @@ function publicJob(job: AgentJob): AgentJob {
 function repoError(e: unknown): Response {
   if (e instanceof RepoError) {
     const status =
-      e.code === "not_found" ? 404 : e.code === "lease_conflict" ? 409 : 500;
-    return err(status, e.code === "internal" ? "internal" : e.code, e.message);
+      e.code === "not_found"
+        ? 404
+        : e.code === "lease_conflict" || e.code === "conflict"
+          ? 409
+          : 500;
+    return err(status, e.code, e.message);
   }
-  return err(500, "internal", "unexpected error");
+  return err(500, "internal", "予期しないエラーが発生しました");
 }
 
 /** dev-login で作る固定開発ユーザーの識別子。 */
@@ -297,7 +302,7 @@ export function createApp(deps: WebDeps): FetchHandler {
    */
   const devLogin = async (): Promise<Response> => {
     if (!deps.devLoginEnabled) {
-      return err(404, "not_found", "not found");
+      return err(404, "not_found", "見つかりません");
     }
     const exists = (await getUserIdByEmail(db, DEV_USER_EMAIL)) !== null;
     const path = exists ? "sign-in/email" : "sign-up/email";
@@ -316,11 +321,11 @@ export function createApp(deps: WebDeps): FetchHandler {
       }),
     );
     if (!inner.ok) {
-      return err(500, "internal", "dev login failed");
+      return err(500, "internal", "開発用ログインに失敗しました");
     }
     const setCookie = inner.headers.get("set-cookie");
     if (!setCookie) {
-      return err(500, "internal", "dev login did not return a session cookie");
+      return err(500, "internal", "開発用ログインでセッションを取得できませんでした");
     }
     return json({ ok: true }, 200, { "set-cookie": setCookie });
   };
@@ -359,10 +364,10 @@ export function createApp(deps: WebDeps): FetchHandler {
       if (method === "GET" && publicRelease) {
         const release = await getReleaseById(db, publicRelease[1]!);
         if (!release || release.status !== "published") {
-          return err(404, "not_found", "not found");
+          return err(404, "not_found", "見つかりません");
         }
         const work = await getWorkById(db, release.work_id);
-        if (!work) return err(404, "not_found", "not found");
+        if (!work) return err(404, "not_found", "見つかりません");
         return json({
           release: {
             id: release.id,
@@ -467,10 +472,10 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workPath) {
           const work = await getWorkById(db, workPath[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const thread = await getThreadByWorkId(db, work.id);
-          if (!thread) return err(500, "internal", "thread missing");
+          if (!thread) return err(500, "internal", "対話スレッドが見つかりません");
           const messages = await listMessages(db, thread.id);
           const openJobs = await listOpenJobsByWork(db, work.id);
           const proposals = await listProposalsByWork(db, work.id);
@@ -498,10 +503,10 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (body instanceof Response) return body;
           const work = await getWorkById(db, workMsgPath[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const thread = await getThreadByWorkId(db, work.id);
-          if (!thread) return err(500, "internal", "thread missing");
+          if (!thread) return err(500, "internal", "対話スレッドが見つかりません");
 
           let key;
           if (body.key_id) {
@@ -549,11 +554,16 @@ export function createApp(deps: WebDeps): FetchHandler {
           return json({ message, job: publicJob(job) }, 202);
         }
 
-        // GET /api/keys — 自分のキー一覧 (ciphertext は絶対返さない)
+        // GET /api/keys — 自分のキー一覧 (ciphertext は絶対返さない)。
+        // works_using は削除時の影響表示用 (spec §9)。
         if (method === "GET" && pathname === "/api/keys") {
           const keys = await listKeysByOwner(db, user.id);
+          const usage = await listKeyUsageCounts(db, user.id);
           return json({
-            keys: keys.map(({ ciphertext: _drop, ...pub }) => pub),
+            keys: keys.map(({ ciphertext: _drop, ...pub }) => ({
+              ...pub,
+              works_using: usage.get(pub.id) ?? 0,
+            })),
           });
         }
 
@@ -579,7 +589,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             id: keyDelete[1]!,
             ownerRef: user.id,
           });
-          if (!deleted) return err(404, "not_found", "not found");
+          if (!deleted) return err(404, "not_found", "見つかりません");
           return json({ ok: true });
         }
 
@@ -588,7 +598,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workProse) {
           const work = await getWorkById(db, workProse[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const episodes = await listEpisodesByWork(db, work.id);
           const scenes = await listScenesByWork(db, work.id);
@@ -611,7 +621,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workspaceFilesPath) {
           const work = await getWorkById(db, workspaceFilesPath[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const files = await listWorkspaceFiles(db, work);
           return json({ files });
@@ -624,11 +634,11 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workspaceFilePath) {
           const work = await getWorkById(db, workspaceFilePath[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const filePath = url.searchParams.get("path") ?? "";
           const file = await readWorkspaceFile(db, work, filePath);
-          if (!file) return err(404, "not_found", "file not found");
+          if (!file) return err(404, "not_found", "ファイルが見つかりません");
           return json(file);
         }
 
@@ -641,7 +651,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           if (body instanceof Response) return body;
           const work = await getWorkById(db, workSettings[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           let keyRef: string | null | undefined;
           let provider: string | null | undefined;
@@ -678,10 +688,10 @@ export function createApp(deps: WebDeps): FetchHandler {
             string,
           ];
           const proposal = await getProposalById(db, proposalId);
-          if (!proposal) return err(404, "not_found", "not found");
+          if (!proposal) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, proposal.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           if (proposal.status !== "pending") {
             return err(400, "bad_request", "この提案はすでに決定済みです");
@@ -707,7 +717,7 @@ export function createApp(deps: WebDeps): FetchHandler {
               proposal.payload,
             );
             if (!planParsed.success) {
-              return err(500, "internal", "plan proposal payload is invalid");
+              return err(500, "internal", "計画提案の内容が不正です");
             }
             const episodes = [];
             const scenes = [];
@@ -794,7 +804,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             await appendMessage(db, {
               threadId: proposal.thread_id,
               role: "assistant",
-              content: `正典メモに ${added} 件追加しました。`,
+              content: `正典に ${added} 件追加しました。`,
             });
             const body = ApproveWorkspaceWriteResponseSchema.parse({
               proposal: updatedProposal,
@@ -810,7 +820,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             contract_id?: string;
           };
           if (!p.scene_id || !p.contract_id || !p.episode_id) {
-            return err(500, "internal", "proposal payload is incomplete");
+            return err(500, "internal", "提案内容が不完全です");
           }
 
           if (action === "reject") {
@@ -879,12 +889,12 @@ export function createApp(deps: WebDeps): FetchHandler {
           const body = await parseBody(request, RewriteSceneRequestSchema);
           if (body instanceof Response) return body;
           const scene = await getSceneById(db, sceneRewrite[1]!);
-          if (!scene) return err(404, "not_found", "not found");
+          if (!scene) return err(404, "not_found", "見つかりません");
           const episode = await getEpisodeById(db, scene.episode_id);
-          if (!episode) return err(404, "not_found", "not found");
+          if (!episode) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, episode.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const contract = await getLatestContractByScene(db, scene.id);
           if (!contract || contract.status !== "approved") {
@@ -919,12 +929,12 @@ export function createApp(deps: WebDeps): FetchHandler {
           const body = await parseBody(request, CreateRevisionRequestSchema);
           if (body instanceof Response) return body;
           const scene = await getSceneById(db, sceneRevs[1]!);
-          if (!scene) return err(404, "not_found", "not found");
+          if (!scene) return err(404, "not_found", "見つかりません");
           const episode = await getEpisodeById(db, scene.episode_id);
-          if (!episode) return err(404, "not_found", "not found");
+          if (!episode) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, episode.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           // 手編集 = kind="manual_edit" の変更セットを自動生成し、
           // このリビジョンに紐付ける (spec §5.5)
@@ -935,6 +945,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             description: "作者による本文の手編集",
             ops: [],
             status: "applied",
+            baseRev: work.canon_rev,
             impact: manualEditImpact({
               sceneId: scene.id,
               sceneTitle: scene.title,
@@ -977,11 +988,11 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "POST" && releaseCreate) {
           const work = await getWorkById(db, releaseCreate[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const episode = await getEpisodeById(db, releaseCreate[2]!);
           if (!episode || episode.work_id !== work.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const content = await snapshotEpisodeProse(db, episode.id);
           if (content.length === 0) {
@@ -1011,7 +1022,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workReleases) {
           const work = await getWorkById(db, workReleases[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const [episodes, releases] = await Promise.all([
             listEpisodesByWork(db, work.id),
@@ -1044,10 +1055,10 @@ export function createApp(deps: WebDeps): FetchHandler {
         );
         if (method === "POST" && releaseUnlist) {
           const release = await getReleaseById(db, releaseUnlist[1]!);
-          if (!release) return err(404, "not_found", "not found");
+          if (!release) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, release.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const updated =
             release.status === "unlisted"
@@ -1066,7 +1077,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "GET" && workChanges) {
           const work = await getWorkById(db, workChanges[1]!);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const changeSets = await listChangeSetsByWork(db, work.id);
           return json({ change_sets: changeSets });
@@ -1084,10 +1095,10 @@ export function createApp(deps: WebDeps): FetchHandler {
             string,
           ];
           const cs = await getChangeSetById(db, changeSetId);
-          if (!cs) return err(404, "not_found", "not found");
+          if (!cs) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, cs.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const thread = await getThreadByWorkId(db, work.id);
 
@@ -1117,17 +1128,27 @@ export function createApp(deps: WebDeps): FetchHandler {
             return json({ change_set: withFindings ?? updated });
           }
 
-          // approve (body は省略可。{force:true} で強制適用)
+          // approve (body は省略可。{force:true} で強制適用。
+          // 強制適用は spec §5.4 に従い理由の記録を必須にする)
           let force = false;
+          let reason: string | undefined;
           const rawBody = await request.text();
           if (rawBody.trim().length > 0) {
             const parsed = ApproveChangeSetRequestSchema.safeParse(
               JSON.parse(rawBody),
             );
             if (!parsed.success) {
-              return err(400, "bad_request", "invalid request body");
+              return err(400, "bad_request", "リクエストの内容が不正です");
             }
             force = parsed.data.force === true;
+            reason = parsed.data.reason;
+          }
+          if (force && !reason) {
+            return err(
+              400,
+              "bad_request",
+              "強制適用には変更理由の記録が必要です",
+            );
           }
           if (cs.status === "applied") {
             // 冪等: 適用済みは現状を返す
@@ -1152,9 +1173,10 @@ export function createApp(deps: WebDeps): FetchHandler {
           const applied = await applyChangeSet(db, {
             changeSetId: cs.id,
             force,
+            reason,
           });
           if (!applied) {
-            return err(500, "internal", "failed to apply change set");
+            return err(500, "internal", "変更セットの適用に失敗しました");
           }
           // レビュー処理 review_change を自動起票 (キー未登録なら起票なし)
           const job = await enqueueReviewChange({
@@ -1168,6 +1190,7 @@ export function createApp(deps: WebDeps): FetchHandler {
               role: "assistant",
               content:
                 `変更セット「${cs.title}」を適用しました${forceNote}。` +
+                (force ? `理由: ${reason}。` : "") +
                 `正典リビジョンは rev${applied.newCanonRev} です。` +
                 (job
                   ? "影響するシーンのレビューを開始します。"
@@ -1188,12 +1211,12 @@ export function createApp(deps: WebDeps): FetchHandler {
           const body = await parseBody(request, SetFindingStatusRequestSchema);
           if (body instanceof Response) return body;
           const finding = await getReviewFindingById(db, findingStatus[1]!);
-          if (!finding) return err(404, "not_found", "not found");
+          if (!finding) return err(404, "not_found", "見つかりません");
           const cs = await getChangeSetById(db, finding.change_set_id);
-          if (!cs) return err(404, "not_found", "not found");
+          if (!cs) return err(404, "not_found", "見つかりません");
           const work = await getWorkById(db, cs.work_id);
           if (!work || work.owner_ref !== user.id) {
-            return err(404, "not_found", "not found");
+            return err(404, "not_found", "見つかりません");
           }
           const updated = await setReviewFindingStatus(db, {
             id: finding.id,
@@ -1202,14 +1225,14 @@ export function createApp(deps: WebDeps): FetchHandler {
           return json({ finding: updated });
         }
 
-        return err(404, "not_found", "not found");
+        return err(404, "not_found", "見つかりません");
       }
 
       // -------------------------------------------------------------------
       // 以降はすべて実行体認証 (EXECUTOR_TOKEN)
       // -------------------------------------------------------------------
       if (!(await authorizedExecutor(request))) {
-        return err(401, "unauthorized", "invalid executor token");
+        return err(401, "unauthorized", "実行体トークンが不正です");
       }
 
       // POST /api/jobs — ジョブ作成 (冪等)
@@ -1248,7 +1271,7 @@ export function createApp(deps: WebDeps): FetchHandler {
       const jobGet = pathname.match(/^\/api\/jobs\/([^/]+)$/);
       if (method === "GET" && jobGet) {
         const job = await getJob(db, jobGet[1]!);
-        if (!job) return err(404, "not_found", "job not found");
+        if (!job) return err(404, "not_found", "ジョブが見つかりません");
         return json({ job: publicJob(job) });
       }
 
@@ -1337,11 +1360,11 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, ResolveKeyRequestSchema);
         if (body instanceof Response) return body;
         const key = await getKeyById(db, keyResolve[1]!);
-        if (!key) return err(404, "not_found", "key not found");
+        if (!key) return err(404, "not_found", "キーが見つかりません");
         const job = await getJob(db, body.job_id);
-        if (!job) return err(404, "not_found", "job not found");
+        if (!job) return err(404, "not_found", "ジョブが見つかりません");
         if (job.user_ref === null || key.owner_ref !== job.user_ref) {
-          return err(403, "forbidden", "key owner does not match job user");
+          return err(403, "forbidden", "キーの所有者がジョブのユーザーと一致しません");
         }
         const apiKey = await decrypt(key.ciphertext, secretKey);
         return json({ api_key: apiKey });
@@ -1353,9 +1376,9 @@ export function createApp(deps: WebDeps): FetchHandler {
       );
       if (method === "GET" && threadCtxPath) {
         const thread = await getThreadById(db, threadCtxPath[1]!);
-        if (!thread) return err(404, "not_found", "thread not found");
+        if (!thread) return err(404, "not_found", "対話スレッドが見つかりません");
         const work = await getWorkById(db, thread.work_id);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const messages = await listMessages(db, thread.id);
         const canonFacts = await listCanonFactsByWork(db, work.id);
         const proposals = await listProposalsByWork(db, work.id);
@@ -1381,7 +1404,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, AppendMessageRequestSchema);
         if (body instanceof Response) return body;
         const thread = await getThreadById(db, threadMsgPath[1]!);
-        if (!thread) return err(404, "not_found", "thread not found");
+        if (!thread) return err(404, "not_found", "対話スレッドが見つかりません");
         const message = await appendMessage(db, {
           threadId: thread.id,
           role: body.role,
@@ -1407,7 +1430,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           ...(body.charter !== undefined ? { charter: body.charter } : {}),
           ...(body.policy !== undefined ? { policy: body.policy } : {}),
         });
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         return json({ work });
       }
 
@@ -1419,7 +1442,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, CreateProposalRequestSchema);
         if (body instanceof Response) return body;
         const work = await getWorkById(db, body.work_id);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
 
         if (body.kind !== PROPOSAL_KIND_WRITING_CONTRACT) {
           // plan / workspace_write 等: 実体化せず提案のみ記録
@@ -1440,7 +1463,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           contract?: unknown;
         };
         if (!p.scene_title || !p.contract) {
-          return err(400, "bad_request", "proposal payload is incomplete");
+          return err(400, "bad_request", "提案内容が不完全です");
         }
         let episode = p.episode_title
           ? await findEpisodeByTitle(db, work.id, p.episode_title)
@@ -1485,7 +1508,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, AddCanonFactsRequestSchema);
         if (body instanceof Response) return body;
         const work = await getWorkById(db, canonPath[1]!);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const { canonFacts, added } = await repoAddCanonFacts(db, {
           workId: work.id,
           statements: body.statements,
@@ -1500,11 +1523,11 @@ export function createApp(deps: WebDeps): FetchHandler {
       );
       if (method === "GET" && sceneCtxPath) {
         const scene = await getSceneById(db, sceneCtxPath[1]!);
-        if (!scene) return err(404, "not_found", "scene not found");
+        if (!scene) return err(404, "not_found", "シーンが見つかりません");
         const episode = await getEpisodeById(db, scene.episode_id);
-        if (!episode) return err(404, "not_found", "episode not found");
+        if (!episode) return err(404, "not_found", "話が見つかりません");
         const work = await getWorkById(db, episode.work_id);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const contract = await getLatestContractByScene(db, scene.id);
         const canonFacts = await listCanonFactsByWork(db, work.id);
         // 同じ作品内で自分より前のシーンの抜粋 (最新リビジョンの先頭200字)
@@ -1539,9 +1562,9 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, RecordDependenciesRequestSchema);
         if (body instanceof Response) return body;
         const scene = await getSceneById(db, depsPath[1]!);
-        if (!scene) return err(404, "not_found", "scene not found");
+        if (!scene) return err(404, "not_found", "シーンが見つかりません");
         const episode = await getEpisodeById(db, scene.episode_id);
-        if (!episode) return err(404, "not_found", "episode not found");
+        if (!episode) return err(404, "not_found", "話が見つかりません");
         const { edges, added } = await addDependencyEdges(db, {
           workId: episode.work_id,
           sceneId: scene.id,
@@ -1559,7 +1582,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, WorkspaceWriteRequestSchema);
         if (body instanceof Response) return body;
         const work = await getWorkById(db, wsWritePath[1]!);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const { proposal, supported } = await workspaceWritePropose(db, {
           workId: work.id,
           path: body.path,
@@ -1577,7 +1600,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, PersistRevisionRequestSchema);
         if (body instanceof Response) return body;
         const scene = await getSceneById(db, sceneRevPath[1]!);
-        if (!scene) return err(404, "not_found", "scene not found");
+        if (!scene) return err(404, "not_found", "シーンが見つかりません");
         const revision = await createSceneRevision(db, {
           sceneId: scene.id,
           contentJson: body.content_json,
@@ -1600,7 +1623,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         const body = await parseBody(request, CreateChangeSetRequestSchema);
         if (body instanceof Response) return body;
         const work = await getWorkById(db, internalCsPath[1]!);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const impact = await computeChangeSetImpact(db, {
           workId: work.id,
           ops: body.ops,
@@ -1611,6 +1634,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           description: body.description,
           ops: body.ops,
           impact,
+          baseRev: work.canon_rev,
           messageId: body.message_id ?? null,
         });
         const withFindings = await getChangeSetWithFindings(db, cs.id);
@@ -1623,11 +1647,11 @@ export function createApp(deps: WebDeps): FetchHandler {
       );
       if (method === "GET" && csCtxPath) {
         const cs = await getChangeSetWithFindings(db, csCtxPath[1]!);
-        if (!cs) return err(404, "not_found", "not found");
+        if (!cs) return err(404, "not_found", "見つかりません");
         const work = await getWorkById(db, cs.work_id);
-        if (!work) return err(404, "not_found", "work not found");
+        if (!work) return err(404, "not_found", "作品が見つかりません");
         const thread = await getThreadByWorkId(db, work.id);
-        if (!thread) return err(404, "not_found", "thread not found");
+        if (!thread) return err(404, "not_found", "対話スレッドが見つかりません");
         const canonFacts = await listCanonFactsByWork(db, work.id);
         const scenes = [];
         for (const s of cs.impact.scenes) {
@@ -1663,7 +1687,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         );
         if (body instanceof Response) return body;
         const cs = await getChangeSetById(db, csFindingsPath[1]!);
-        if (!cs) return err(404, "not_found", "not found");
+        if (!cs) return err(404, "not_found", "見つかりません");
         const { findings, added } = await addReviewFindings(db, {
           changeSetId: cs.id,
           findings: body.findings.map((f) => ({
@@ -1678,7 +1702,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         return json({ findings, added });
       }
 
-      return err(404, "not_found", "not found");
+      return err(404, "not_found", "見つかりません");
     } catch (e) {
       return repoError(e);
     }

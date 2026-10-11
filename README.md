@@ -12,7 +12,7 @@ pnpm workspaces モノレポ。`pnpm -r build` / `pnpm -r typecheck` / `pnpm -r 
   - `workers/app.ts` — Workers エントリ。`/api/*` は素の fetch ハンドラ (`src/app.ts`)、それ以外は React Router SSR に流す
   - `src/app.ts` — `createApp(deps)` の DI 形 API。D1 と better-sqlite3 の両方で動く
   - `src/auth.ts` — better-auth (Google/GitHub OAuth + dev-login 用 email/password)
-  - `app/` — React Router のルート (`/login`, `/`, `/works/new`, `/works/:id`, `/settings/keys`)。素の CSS (`app/app.css`)
+  - `app/` — React Router のルート (`/login`, `/`, `/works/new`, `/works/:id`, `/settings/keys`, `/r/:id` 読者向け公開ページ)。素の CSS (`app/app.css`)
   - `test/helpers.ts` — `makeApp()` (createTestDb + createAuth + createApp) とセッション cookie 発行ヘルパー
 - `apps/runner` — Node.js 実行体 (常駐ループ: lease → 処理 → progress → complete)
   - `src/api.ts` — Web API クライアント (key resolve / thread context / message append / work patch 含む)
@@ -22,8 +22,12 @@ pnpm workspaces モノレポ。`pnpm -r build` / `pnpm -r typecheck` / `pnpm -r 
 - `packages/secrets` — AES-256-GCM 暗号化 (Web Crypto、Node と Workers で共通)。`secretsEqual` はトークン比較用の定数時間比較
 - `packages/providers` — `Provider` インターフェース、`OpenAIResponsesProvider` (Responses API、SSE ストリーム対応)、`StubProvider` (呼出しカウンタ付き)
 - `packages/database` — Drizzle ORM スキーマ + リポジトリ関数 + `migrations/` (drizzle-kit 互換 SQL)。`DbLike` インターフェースで D1/better-sqlite3 を吸収
-- `packages/harness` — ジョブ種別ごとのステートマシン (`smoke_generate`, `orchestrator_turn`)
-- `packages/prompts` — オーケストレーターの日本語システムプロンプトと `<<WORK_PATCH>>` パーサー
+- `packages/harness` — ジョブ種別ごとのステートマシン (`smoke_generate`, `orchestrator_turn`, `generate_scene`, `plan_work`, `review_change`)
+- `packages/prompts` — オーケストレーター/執筆/検査の日本語プロンプトと `<<WORK_PATCH>>` `<<CANON_FACTS>>` `<<PROPOSE>>` `<<RUN_PLAN>>` `<<CHANGESET>>` パーサー
+- `packages/workspace` — 作品ごとの仮想ワークスペース (正典・計画・契約・本文を固定パスのファイルとして公開。`/canon/facts.md` のみ書き込み可)
+- `packages/validators` — LLMを通さない決定的検査 (contract.forbidden 一致・required_events カバレッジ・秘密マーク正典の本文漏洩)
+- `packages/story-evals` — ストーリー評価。`scenarios/*.json` の対話・生成シナリオを stub/実モデルで回帰実行する CLI (`pnpm evals`)
+- `packages/skills` — orchestrator が参照する執筆スキル集 (frontmatter 付き md)
 
 ## 開発
 
@@ -88,7 +92,7 @@ pnpm -r test
 
 返答末尾のマーカー行をパースして適用する (いずれも末尾の連続マーカー行のみ有効、パース失敗は無視):
 - `<<WORK_PATCH {...}>>` — 作品属性 (title/premise/genre/status/charter/policy) を更新
-- `<<CANON_FACTS ["文", ...]>>` — 正典メモ (canon_facts) に追記。statement 完全一致は重複スキップ
+- `<<CANON_FACTS ["文", ...]>>` — 正典 (canon_facts) に追記。statement 完全一致は重複スキップ
 - `<<PROPOSE {...}>>` — 「話+シーン+Writing Contract」の提案を作成し、チャットに承認カードを表示する (proposal + episode/scene/contract をサーバー側で一括作成)
 
 最初のユーザー発言で作品は `setup` → `active` に遷移する。
@@ -96,9 +100,21 @@ pnpm -r test
 ## Phase 1b: 提案 → 承認 → 本文生成
 
 - **提案カード**: `<<PROPOSE>>` で作られた提案は assistant メッセージの下に承認カードとして出る。「承認して本文を生成」→ 契約とシーンが approved になり `generate_scene` ジョブが投下される。「却下する」→ rejected にして対話で修正を続けられる。
-- **generate_scene**: Writing Contract の `status === "approved"` をゲート検証 → 作品+正典メモ+直前シーン抜粋を入力に provider へ stream 生成 → 段落分割で Tiptap doc JSON に変換 → `scene_revisions` に `rev_no=最大+1` で保存 → `scenes.status=generated`。
+- **generate_scene**: Writing Contract の `status === "approved"` をゲート検証 → 作品+正典+直前シーン抜粋を入力に provider へ stream 生成 → 段落分割で Tiptap doc JSON に変換 → `scene_revisions` に `rev_no=最大+1` で保存 → `scenes.status=generated`。
 - **本文タブ**: 話→シーンの一覧、リビジョン切替 (第N稿)、「書き直しを依頼」(指示付きで generate_scene 再投下=新リビジョン)、「手編集」(textarea → manual_edit リビジョン)。
-- **設定タブ**: 創作憲章/作風ポリシーの表示、作品の provider/model/キー選択 (自分のキーのみ)。作品作成時点ではユーザーの最新キーが初期値。
+- **設定タブ**: 創作憲章/執筆ポリシーの表示 (編集は対話経由)、作品の provider/model/キー選択 (自分のキーのみ)。作品作成時点ではユーザーの最新キーが初期値。
+
+## evals (ストーリー評価)
+
+`packages/story-evals` のシナリオをまとめて実行する。spec §11-15 の回帰検出用。
+
+```bash
+pnpm evals                        # stub provider (決定的・APIキー不要)
+EVAL_LIVE=1 pnpm evals            # 実モデル (OPENAI_API_KEY 必須)
+EVAL_MODEL=gpt-4o-mini pnpm evals # live モデル名の変更
+```
+
+シナリオは `packages/story-evals/scenarios/*.json` に追加する。fail/error が1件でもあれば終了コード1。レポートは `packages/story-evals/reports/eval-report.json` にも出力される (gitignore 済み)。
 
 ## ローカル一気通貫 (ブラウザ + stub runner、実 OpenAI キー不要)
 

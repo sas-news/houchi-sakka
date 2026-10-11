@@ -13,6 +13,8 @@ export interface KeyInfo {
   label: string;
   provider: string;
   created_at: number;
+  /** このキーを参照している作品数 (削除時の影響表示)。 */
+  works_using?: number;
 }
 
 export interface WorkInfo {
@@ -46,6 +48,7 @@ export interface JobInfo {
   kind: string;
   status: "queued" | "leased" | "completed" | "failed" | "cancelled";
   error: string | null;
+  created_at: number;
 }
 
 export interface ProgressEventInfo {
@@ -183,6 +186,10 @@ export interface ChangeSetInfo {
   impact: ChangeSetImpact;
   /** 強制適用なら 1 (DB INTEGER)。 */
   force: number;
+  /** 強制適用時に記録した理由 (spec §5.4)。 */
+  force_reason: string | null;
+  /** 提案時点の canon_rev (spec §8.3 楽観的競合検出)。 */
+  base_rev: number | null;
   findings: ReviewFindingInfo[];
   created_at: number;
   decided_at: number | null;

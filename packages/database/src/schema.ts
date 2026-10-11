@@ -274,6 +274,10 @@ export const changeSets = sqliteTable(
     impact: text("impact").notNull(),
     /** 強制適用で 1 (spec §5.4)。 */
     force: integer("force").notNull().default(0),
+    /** 強制適用時の変更理由 (spec §5.4)。 */
+    forceReason: text("force_reason"),
+    /** 提案時点の works.canon_rev (楽観的競合検出, spec §8.3)。 */
+    baseRev: integer("base_rev"),
     /** 提案を出したチャットメッセージ (カード紐付け)。 */
     messageId: text("message_id"),
     createdAt: integer("created_at").notNull(),

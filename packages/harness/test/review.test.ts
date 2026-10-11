@@ -48,6 +48,8 @@ const CHANGE_SET: ChangeSetWithFindings = {
     summary: "シーン 1件",
   },
   force: 0,
+  force_reason: null,
+  base_rev: null,
   findings: [],
   created_at: 0,
   decided_at: 1,

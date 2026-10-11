@@ -222,6 +222,7 @@ export const ApiErrorCodeSchema = z.enum([
   "bad_request",
   "not_found",
   "lease_conflict",
+  "conflict",
   "internal",
 ]);
 export type ApiErrorCode = z.infer<typeof ApiErrorCodeSchema>;
@@ -1162,6 +1163,10 @@ export const ChangeSetSchema = z.object({
   impact: ChangeSetImpactSchema,
   /** force 適用で 1 (spec §5.4)。 */
   force: z.number().int(),
+  /** 強制適用時に記録した変更理由 (spec §5.4)。 */
+  force_reason: z.string().nullable(),
+  /** 提案時点の canon_rev。適用時の楽観的競合検出に使う (spec §8.3)。 */
+  base_rev: z.number().int().nullable(),
   /** この提案を出したチャットメッセージ (カード紐付け)。 */
   message_id: z.string().nullable(),
   created_at: z.number(),
@@ -1376,6 +1381,8 @@ export type RecordReviewFindingsResponse = z.infer<
 /** POST /api/change-sets/:id/approve — {force:true} で force_override 昇格。 */
 export const ApproveChangeSetRequestSchema = z.object({
   force: z.boolean().optional(),
+  /** 強制適用の理由 (spec §5.4)。force=true では必須。 */
+  reason: z.string().trim().min(1).max(2000).optional(),
 });
 export type ApproveChangeSetRequest = z.infer<
   typeof ApproveChangeSetRequestSchema
