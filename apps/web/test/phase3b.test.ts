@@ -100,10 +100,12 @@ describe("Phase 3b: 読者向け作品目次 /api/w/:id", () => {
     const { app } = makeApp();
     const call = makeCall(app);
     const { cookie, workId, threadId, messageId } = await setupWork(call);
-    const [ep1, ep2] = await seedEpisodes(call, cookie, workId, threadId, messageId, [
+    const eps = await seedEpisodes(call, cookie, workId, threadId, messageId, [
       { epTitle: "第一話", sceneTitle: "廃線ホーム" },
       { epTitle: "第二話", sceneTitle: "站台" },
     ]);
+    const ep1 = eps[0]!;
+    const ep2 = eps[1]!;
     await persistProse(call, ep1.sceneId, "第一話の本文。汽車は止まった。");
     await persistProse(call, ep2.sceneId, "第二話の本文。");
 
@@ -144,9 +146,11 @@ describe("Phase 3b: 読者向け作品目次 /api/w/:id", () => {
       statements: ["秘密の正典情報"],
       provenance: "test",
     });
-    const [{ episodeId, sceneId }] = await seedEpisodes(call, cookie, workId, threadId, messageId, [
-      { epTitle: "第一話", sceneTitle: "廃線ホーム" },
-    ]);
+    const { episodeId, sceneId } = (
+      await seedEpisodes(call, cookie, workId, threadId, messageId, [
+        { epTitle: "第一話", sceneTitle: "廃線ホーム" },
+      ])
+    )[0]!;
     await persistProse(call, sceneId, "公開する本文");
     await publish(call, cookie, workId, episodeId);
 
@@ -175,9 +179,11 @@ describe("Phase 3b: 読者向け作品目次 /api/w/:id", () => {
     const call = makeCall(app);
     const { cookie, workId, threadId, messageId } = await setupWork(call);
     // 話も本文もあるが未公開 → 404
-    const [{ episodeId, sceneId }] = await seedEpisodes(call, cookie, workId, threadId, messageId, [
-      { epTitle: "第一話", sceneTitle: "廃線ホーム" },
-    ]);
+    const { episodeId, sceneId } = (
+      await seedEpisodes(call, cookie, workId, threadId, messageId, [
+        { epTitle: "第一話", sceneTitle: "廃線ホーム" },
+      ])
+    )[0]!;
     await persistProse(call, sceneId, "未公開の本文");
     expect((await call("GET", `/api/w/${workId}`, undefined, { token: null })).status).toBe(404);
     // 取り下げただけの作品も 404
@@ -194,10 +200,12 @@ describe("Phase 3b: 読者向け作品目次 /api/w/:id", () => {
     const { app } = makeApp();
     const call = makeCall(app);
     const { cookie, workId, threadId, messageId } = await setupWork(call);
-    const [ep1, ep2] = await seedEpisodes(call, cookie, workId, threadId, messageId, [
+    const eps = await seedEpisodes(call, cookie, workId, threadId, messageId, [
       { epTitle: "第一話", sceneTitle: "廃線ホーム" },
       { epTitle: "第二話", sceneTitle: "站台" },
     ]);
+    const ep1 = eps[0]!;
+    const ep2 = eps[1]!;
     await persistProse(call, ep1.sceneId, "第一話の本文");
     await persistProse(call, ep2.sceneId, "第二話の本文");
     // 第二話だけ公開
