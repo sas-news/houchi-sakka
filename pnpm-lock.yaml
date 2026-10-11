@@ -63,6 +63,9 @@ importers:
       better-auth:
         specifier: ^1.7.7
         version: 1.7.7(drizzle-kit@0.31.11)(drizzle-orm@0.44.7(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(kysely@0.29.6))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15))
+      diff:
+        specifier: ^9.0.0
+        version: 9.0.0
       drizzle-orm:
         specifier: ^0.44.5
         version: 0.44.7(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(kysely@0.29.6)
@@ -1778,6 +1781,10 @@ packages:
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
+
+  diff@9.0.0:
+    resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
+    engines: {node: '>=0.3.1'}
 
   drizzle-kit@0.31.11:
     resolution: {integrity: sha512-YCYqxTLIB2OCqf6w9/Vef13baBVbwQIPcbT4Y56AfO6B9ajZhDhD8Jkveg/hJvT/iuMloKD/IYYkyMMNhr7Kqg==}
@@ -3552,6 +3559,8 @@ snapshots:
   defu@6.1.7: {}
 
   detect-libc@2.1.2: {}
+
+  diff@9.0.0: {}
 
   drizzle-kit@0.31.11:
     dependencies:

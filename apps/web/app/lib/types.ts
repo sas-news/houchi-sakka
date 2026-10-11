@@ -258,3 +258,22 @@ export interface PublicReleaseInfo {
   published_at: number;
   scenes: ReleaseSceneInfo[];
 }
+
+/** GET /api/w/:id — 読者向け作品目次 (安全なフィールドのみ)。 */
+export interface PublicWorkEpisodeInfo {
+  episode_id: string;
+  ord: number;
+  /** 話タイトル (最新公開版の発行時点)。 */
+  title: string;
+  /** その話の published リリース数。 */
+  version_count: number;
+  release_id: string;
+  rev_no: number;
+  published_at: number;
+}
+
+export interface PublicWorkInfo {
+  id: string;
+  title: string;
+  premise: string;
+}

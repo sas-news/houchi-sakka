@@ -1289,6 +1289,39 @@ export const PublicReleaseResponseSchema = z.object({
 });
 export type PublicReleaseResponse = z.infer<typeof PublicReleaseResponseSchema>;
 
+/**
+ * GET /api/w/:id — 読者向けの作品公開目次。
+ * spec P9/§9: タイトル・あらすじ・公開話の一覧だけを返し、
+ * 正典・下書き・ユーザー情報・canon_rev は絶対に含めない。
+ */
+export const PublicWorkEpisodeSchema = z.object({
+  episode_id: z.string(),
+  ord: z.number().int(),
+  /** 話タイトル (最新公開版の発行時点)。 */
+  title: z.string(),
+  /** その話の published リリース数 (版の履歴)。 */
+  version_count: z.number().int(),
+  /** 最新 published リリース。 */
+  release_id: z.string(),
+  rev_no: z.number().int(),
+  published_at: z.number(),
+});
+export type PublicWorkEpisode = z.infer<typeof PublicWorkEpisodeSchema>;
+
+export const PublicWorkSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  /** あらすじ (空文字なら未設定)。 */
+  premise: z.string(),
+});
+export type PublicWork = z.infer<typeof PublicWorkSchema>;
+
+export const PublicWorkResponseSchema = z.object({
+  work: PublicWorkSchema,
+  episodes: z.array(PublicWorkEpisodeSchema),
+});
+export type PublicWorkResponse = z.infer<typeof PublicWorkResponseSchema>;
+
 /** GET /api/internal/change-sets/:id/context — review_change の入力材料。 */
 export const ChangeSetContextResponseSchema = z.object({
   change_set: ChangeSetWithFindingsSchema,

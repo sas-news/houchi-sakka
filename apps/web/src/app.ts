@@ -95,6 +95,7 @@ import {
   listOpenJobsByWork,
   listProgress,
   listProposalsByWork,
+  listPublicWorkEpisodes,
   listReleasesByWork,
   listRevisionsByScene,
   listRevisionsByWork,
@@ -371,6 +372,25 @@ export function createApp(deps: WebDeps): FetchHandler {
             published_at: release.published_at,
             scenes: release.content,
           },
+        });
+      }
+
+      /**
+       * GET /api/w/:id — 読者向けの作品公開目次 (ログイン不要)。
+       * 話ごとの最新 published リリースと版数だけを返す。
+       * published が 1 件も無い作品は存在自体を出さず 404 (spec P9)。
+       */
+      const publicWork = pathname.match(/^\/api\/w\/([^/]+)$/);
+      if (method === "GET" && publicWork) {
+        const work = await getWorkById(db, publicWork[1]!);
+        if (!work) return err(404, "not_found", "not found");
+        const episodes = await listPublicWorkEpisodes(db, work.id);
+        if (episodes.length === 0) {
+          return err(404, "not_found", "not found");
+        }
+        return json({
+          work: { id: work.id, title: work.title, premise: work.premise },
+          episodes,
         });
       }
 
