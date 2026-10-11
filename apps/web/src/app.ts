@@ -60,6 +60,7 @@ import {
   createJob,
   createKey,
   createProposal,
+  createRelease,
   createScene,
   createSceneRevision,
   createWork,
@@ -76,6 +77,7 @@ import {
   getLatestContractByScene,
   getLatestEpisode,
   getProposalById,
+  getReleaseById,
   getReviewFindingById,
   getSceneById,
   getThreadById,
@@ -93,6 +95,7 @@ import {
   listOpenJobsByWork,
   listProgress,
   listProposalsByWork,
+  listReleasesByWork,
   listRevisionsByScene,
   listRevisionsByWork,
   listScenesByWork,
@@ -100,7 +103,9 @@ import {
   manualEditImpact,
   patchWork,
   RepoError,
+  setReleaseStatus,
   setReviewFindingStatus,
+  snapshotEpisodeProse,
   updateChangeSetState,
   updateContractStatus,
   updateProposalStatus,
@@ -344,6 +349,31 @@ export function createApp(deps: WebDeps): FetchHandler {
         return await devLogin();
       }
 
+      /**
+       * GET /api/r/:id — 読者向けの公開リリース (ログイン不要)。
+       * spec P9/§9: published のみ、安全なフィールド (タイトル・話名・
+       * 本文・公開日) だけを返す。正典・ユーザー情報・下書きは出さない。
+       */
+      const publicRelease = pathname.match(/^\/api\/r\/([^/]+)$/);
+      if (method === "GET" && publicRelease) {
+        const release = await getReleaseById(db, publicRelease[1]!);
+        if (!release || release.status !== "published") {
+          return err(404, "not_found", "not found");
+        }
+        const work = await getWorkById(db, release.work_id);
+        if (!work) return err(404, "not_found", "not found");
+        return json({
+          release: {
+            id: release.id,
+            work_title: work.title,
+            title: release.title,
+            rev_no: release.rev_no,
+            published_at: release.published_at,
+            scenes: release.content,
+          },
+        });
+      }
+
       // -------------------------------------------------------------------
       // ユーザー向け API (セッション認証)
       // -------------------------------------------------------------------
@@ -355,6 +385,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         pathname.startsWith("/api/keys/") ||
         pathname.startsWith("/api/proposals/") ||
         pathname.startsWith("/api/scenes/") ||
+        pathname.startsWith("/api/releases/") ||
         pathname.startsWith("/api/change-sets/") ||
         pathname.startsWith("/api/review-findings/");
       if (userScoped) {
@@ -914,6 +945,98 @@ export function createApp(deps: WebDeps): FetchHandler {
             changeSetId: manualChangeSet.id,
           });
           return json({ revision, change_set: manualChangeSet }, 201);
+        }
+
+        /**
+         * POST /api/works/:id/episodes/:epId/releases — 話を不変スナップショット
+         * として公開する (owner のみ)。rev_no = その話の通し番号。
+         */
+        const releaseCreate = pathname.match(
+          /^\/api\/works\/([^/]+)\/episodes\/([^/]+)\/releases$/,
+        );
+        if (method === "POST" && releaseCreate) {
+          const work = await getWorkById(db, releaseCreate[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const episode = await getEpisodeById(db, releaseCreate[2]!);
+          if (!episode || episode.work_id !== work.id) {
+            return err(404, "not_found", "not found");
+          }
+          const content = await snapshotEpisodeProse(db, episode.id);
+          if (content.length === 0) {
+            return err(
+              400,
+              "bad_request",
+              "この話にはまだ本文がありません。本文を生成してから公開してください",
+            );
+          }
+          const release = await createRelease(db, {
+            workId: work.id,
+            episodeId: episode.id,
+            title: episode.title,
+            canonRev: work.canon_rev,
+            content,
+          });
+          return json({ release }, 201);
+        }
+
+        /**
+         * GET /api/works/:id/releases — 公開タブのデータ一式 (owner のみ)。
+         * 話ごとのリリース履歴 + 公開可否 (本文の有無) + 最新公開以降の変更検出。
+         */
+        const workReleases = pathname.match(
+          /^\/api\/works\/([^/]+)\/releases$/,
+        );
+        if (method === "GET" && workReleases) {
+          const work = await getWorkById(db, workReleases[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const [episodes, releases] = await Promise.all([
+            listEpisodesByWork(db, work.id),
+            listReleasesByWork(db, work.id),
+          ]);
+          const latestByEpisode = new Map<string, (typeof releases)[number]>();
+          for (const r of releases) latestByEpisode.set(r.episode_id, r);
+          const episodeRows = [];
+          for (const ep of episodes) {
+            const snapshot = await snapshotEpisodeProse(db, ep.id);
+            const latest = latestByEpisode.get(ep.id);
+            const dirty =
+              latest !== undefined &&
+              (latest.title !== ep.title ||
+                JSON.stringify(latest.content) !== JSON.stringify(snapshot));
+            episodeRows.push({
+              id: ep.id,
+              ord: ep.ord,
+              title: ep.title,
+              has_prose: snapshot.length > 0,
+              dirty,
+            });
+          }
+          return json({ episodes: episodeRows, releases });
+        }
+
+        // POST /api/releases/:id/unlist — 公開取り下げ (owner のみ、冪等)
+        const releaseUnlist = pathname.match(
+          /^\/api\/releases\/([^/]+)\/unlist$/,
+        );
+        if (method === "POST" && releaseUnlist) {
+          const release = await getReleaseById(db, releaseUnlist[1]!);
+          if (!release) return err(404, "not_found", "not found");
+          const work = await getWorkById(db, release.work_id);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "not found");
+          }
+          const updated =
+            release.status === "unlisted"
+              ? release
+              : await setReleaseStatus(db, {
+                  id: release.id,
+                  status: "unlisted",
+                });
+          return json({ release: updated });
         }
 
         // GET /api/works/:id/changes — 変更タブ用の変更セット+findings

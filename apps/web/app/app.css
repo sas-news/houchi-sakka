@@ -931,3 +931,158 @@ button:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- Phase 3a: 公開タブ ---------- */
+.release-card {
+  margin-bottom: 16px;
+}
+
+.release-head h2 {
+  font-size: 1.05rem;
+  margin: 0 0 8px;
+}
+
+.release-head h2 .badge {
+  margin-left: 6px;
+  font-size: 0.72rem;
+  vertical-align: middle;
+}
+
+.release-head .form-actions {
+  margin: 8px 0;
+}
+
+.release-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.release-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.release-row:last-child {
+  border-bottom: none;
+}
+
+.release-info {
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+}
+
+.release-url {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.release-url code {
+  background: var(--neutral-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.release-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.release-actions .release-open {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+/* ---------- Phase 3a: 読者ページ /r/:id ---------- */
+.reader {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+  font-family: var(--font-serif);
+  color: var(--ink);
+}
+
+.reader-head {
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 20px;
+}
+
+.reader-work {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+.reader-title {
+  font-size: 1.6rem;
+  line-height: 1.4;
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+.reader-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+.reader-body {
+  font-size: 1rem;
+  line-height: 2;
+  letter-spacing: 0.02em;
+}
+
+.reader-scene {
+  margin-bottom: 36px;
+}
+
+.reader-scene-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0 0 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.reader-body p {
+  margin: 0 0 1.2em;
+  text-indent: 1em;
+}
+
+.reader-foot {
+  margin-top: 48px;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.reader-foot-line {
+  display: block;
+  width: 64px;
+  margin: 0 auto 16px;
+  border-top: 1px solid var(--border);
+}
+
+.reader-foot a {
+  color: var(--accent);
+}
+
+.reader-error {
+  text-align: center;
+  padding: 64px 0;
+}
+
+.reader-error h1 {
+  font-size: 1.3rem;
+  margin-bottom: 12px;
+}

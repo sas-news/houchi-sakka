@@ -3,11 +3,13 @@ import type {
   JobInfo,
   KeyInfo,
   ProposalInfo,
+  ReleaseInfo,
   ReviewFindingInfo,
   SceneRevisionInfo,
   WorkDetail,
   WorkInfo,
   WorkProse,
+  WorkReleases,
   WorkspaceFileInfo,
 } from "./types";
 
@@ -92,4 +94,15 @@ export const api = {
       "POST",
       { status },
     ),
+  /** 公開タブ: 話ごとの公開可否 + リリース履歴。 */
+  getReleases: (id: string) =>
+    call<WorkReleases>(`/api/works/${id}/releases`),
+  /** 話の現時点の本文を凍結して公開する。 */
+  publishRelease: (workId: string, episodeId: string) =>
+    call<{ release: ReleaseInfo }>(
+      `/api/works/${workId}/episodes/${episodeId}/releases`,
+      "POST",
+    ),
+  unlistRelease: (id: string) =>
+    call<{ release: ReleaseInfo }>(`/api/releases/${id}/unlist`, "POST"),
 };

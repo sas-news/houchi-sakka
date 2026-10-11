@@ -5,5 +5,6 @@ export default [
   route("login", "routes/login.tsx"),
   route("works/new", "routes/works.new.tsx"),
   route("works/:id", "routes/works.$id.tsx"),
+  route("r/:id", "routes/r.$id.tsx"),
   route("settings/keys", "routes/settings.keys.tsx"),
 ] satisfies RouteConfig;
