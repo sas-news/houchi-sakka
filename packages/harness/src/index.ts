@@ -129,6 +129,8 @@ export interface JobContext {
     description?: string;
     ops: ChangeSetOp[];
     message_id?: string | null;
+    /** 起票種別 (省略 normal)。review_change の修正提案は "revision"。 */
+    kind?: "normal" | "revision";
   }): Promise<ChangeSetWithFindings>;
   /** review_change: 変更セット+影響シーン本文+現行正典を取得する。 */
   fetchChangeSetContext?(changeSetId: string): Promise<ChangeSetContextResponse>;

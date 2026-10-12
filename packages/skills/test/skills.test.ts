@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { SKILLS, criticSkill, plannerSkill, writerSkill } from "../src/index.js";
+import {
+  SKILLS,
+  criticSkill,
+  fixerSkill,
+  plannerSkill,
+  writerSkill,
+} from "../src/index.js";
 
 const contract = {
   role: "導入",
@@ -11,15 +17,17 @@ const contract = {
 };
 
 describe("skills レジストリ", () => {
-  it("planner/writer/critic の3スキルが登録されている", () => {
+  it("planner/writer/critic/fixer の4スキルが登録されている", () => {
     expect(Object.keys(SKILLS).sort()).toEqual([
       "critic",
+      "fixer",
       "planner",
       "writer",
     ]);
     expect(plannerSkill.tools).toContain("writePropose");
     expect(writerSkill.tools).toContain("writePropose");
     expect(criticSkill.tools).not.toContain("writePropose");
+    expect(fixerSkill.tools).toContain("writePropose");
   });
 
   it("planner: buildPrompt → outputSchema で往復できる", () => {
@@ -60,6 +68,45 @@ describe("skills レジストリ", () => {
     expect(() =>
       criticSkill.outputSchema.parse({
         violations: [{ rule: "r", detail: "d", severity: "fatal" }],
+      }),
+    ).toThrow();
+  });
+
+  it("fixer: findings の添字と action enum を検証する", () => {
+    const messages = fixerSkill.buildPrompt({
+      work: { title: "作品", premise: "前提" },
+      change_set: { title: "設定変更", description: "" },
+      canon_facts: [{ id: "f1", statement: "汽車は週1だけ走っている" }],
+      findings: [
+        {
+          index: 0,
+          kind: "conflict",
+          severity: "high",
+          summary: "廃線ホーム: canon",
+          detail: "矛盾",
+          scene: { id: "s1", title: "廃線ホーム", prose_md: "本文", contract: null },
+          fact: null,
+        },
+      ],
+    });
+    // finding の本文と fact_id がプロンプトに乗る
+    const joined = messages.map((m) => m.content).join("\n");
+    expect(joined).toContain("汽車は週1だけ走っている");
+    expect(joined).toContain("f1");
+    expect(joined).toContain("本文");
+    const parsed = fixerSkill.outputSchema.parse({
+      fixes: [
+        {
+          finding_index: 0,
+          action: "rewrite_scene",
+          text: "書き換え後",
+        },
+      ],
+    });
+    expect(parsed.fixes[0]!.action).toBe("rewrite_scene");
+    expect(() =>
+      fixerSkill.outputSchema.parse({
+        fixes: [{ finding_index: 0, action: "delete_scene", text: "x" }],
       }),
     ).toThrow();
   });

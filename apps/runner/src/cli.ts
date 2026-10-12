@@ -187,6 +187,28 @@ function phase2aStubResponder(req: ProviderRequest): string {
 function phase2bStubResponder(req: ProviderRequest): string {
   const joined = req.input.map((m) => m.content).join("\n");
 
+  if (joined.includes("修正案担当")) {
+    // review_change の修正提案: 「汽車は来ない」と矛盾する本文を
+    // 新正典「週1だけ走っている」に整合させた rewrite_scene を返す。
+    return JSON.stringify({
+      fixes: [
+        {
+          finding_index: 0,
+          action: "rewrite_scene",
+          text: [
+            "雨がやんだ頃、廃線のホームに少女が立っていた。",
+            "",
+            "彼女は濡れた切符を眺め、それから意を決したように線路の先を見上げた。週に一度だけ、戻る汽車は来る。そのわずかな明日のために、歩き出す理由ができた。",
+            "",
+            "枕木を踏むたび、石畳の下で都市の心音がかすかに鳴っていた。",
+          ].join("\n"),
+          fact_id: "",
+          reason:
+            "新正典「週1だけ走っている」と矛盾する「もう戻る汽車は来ない」という描写を修正",
+        },
+      ],
+    });
+  }
   if (joined.includes("「計画担当」") || joined.includes("計画担当")) {
     return JSON.stringify({
       episodes: [

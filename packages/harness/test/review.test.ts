@@ -90,6 +90,16 @@ function makeCtx(opts: {
   provider: StubProvider;
   findings: { change_set_id: string; findings: unknown[] }[];
   messages: { role: string; content: string }[];
+  /** レビュー対象の変更セットを差し替える (kind=revision の連鎖防止検証など)。 */
+  changeSet?: ChangeSetWithFindings;
+  /** 修正提案の起票呼び出しを記録する配列を渡すと createChangeSet を配線する。 */
+  createdChangeSets?: {
+    work_id: string;
+    title: string;
+    ops: unknown[];
+    kind?: string;
+    message_id?: string | null;
+  }[];
 }): JobContext {
   const progressCalls: string[] = [];
   void progressCalls;
@@ -99,7 +109,7 @@ function makeCtx(opts: {
     postProgress: async () => {},
     saveCheckpoint: async () => {},
     fetchChangeSetContext: async () => ({
-      change_set: CHANGE_SET,
+      change_set: opts.changeSet ?? CHANGE_SET,
       work: WORK,
       thread_id: "t1",
       canon_facts: [
@@ -137,6 +147,27 @@ function makeCtx(opts: {
         created_at: Date.now(),
       };
     },
+    ...(opts.createdChangeSets
+      ? {
+          createChangeSet: async (req: {
+            work_id: string;
+            title: string;
+            ops: unknown[];
+            kind?: string;
+            message_id?: string | null;
+          }) => {
+            opts.createdChangeSets!.push(req);
+            return {
+              ...CHANGE_SET,
+              id: "cs-fix-1",
+              kind: (req.kind ?? "normal") as ChangeSetWithFindings["kind"],
+              title: req.title,
+              message_id: req.message_id ?? null,
+              status: "proposed" as const,
+            };
+          },
+        }
+      : {}),
     complete: async () => {},
     fail: async () => {
       throw new Error("job failed");
@@ -250,5 +281,130 @@ describe("review_change ジョブ", () => {
     expect(findings).toHaveLength(1);
     expect((findings[0]!.findings as ReviewFinding[]).length).toBe(0);
     expect(messages[0]!.content).toContain("影響するシーンはありませんでした");
+  });
+
+  it("findings から修正候補の変更セット (kind=revision) を自動提案する", async () => {
+    const provider = new StubProvider({
+      respond: (req) => {
+        const joined = req.input.map((m) => m.content).join("\n");
+        if (joined.includes("修正案担当")) {
+          return JSON.stringify({
+            fixes: [
+              {
+                finding_index: 0,
+                action: "rewrite_scene",
+                text: "週に一度だけ戻る汽車は来る。",
+                fact_id: "",
+                reason: "新正典との矛盾を解消",
+              },
+            ],
+          });
+        }
+        return JSON.stringify({
+          violations: [
+            { rule: "canon", detail: "新正典と矛盾", severity: "high" },
+          ],
+          notes: [],
+        });
+      },
+    });
+    const findings: { change_set_id: string; findings: unknown[] }[] = [];
+    const messages: { role: string; content: string }[] = [];
+    const createdChangeSets: {
+      work_id: string;
+      title: string;
+      ops: unknown[];
+      kind?: string;
+      message_id?: string | null;
+    }[] = [];
+    const ctx = makeCtx({ provider, findings, messages, createdChangeSets });
+
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    // critic + fixer の2回だけ呼ばれる
+    expect(provider.calls).toBe(2);
+
+    // 修正候補が kind=revision で起票され、報告メッセージに紐付く
+    expect(createdChangeSets).toHaveLength(1);
+    const req = createdChangeSets[0]!;
+    expect(req.work_id).toBe("w1");
+    expect(req.kind).toBe("revision");
+    expect(req.title).toContain("修正候補");
+    expect(req.message_id).toBe("msg-review");
+    expect(req.ops).toEqual([
+      { op: "rewrite_scene", scene_id: "s1", text: "週に一度だけ戻る汽車は来る。" },
+    ]);
+    expect(messages[0]!.content).toContain("修正候補の変更セットを提案しました");
+  });
+
+  it("kind=revision のレビューでは修正提案を再生成しない (連鎖防止)", async () => {
+    // fixer が何を返してもいい — 呼ばれないことを検証する
+    const provider = new StubProvider({
+      respond: (req) => {
+        const joined = req.input.map((m) => m.content).join("\n");
+        if (joined.includes("修正案担当")) {
+          return JSON.stringify({
+            fixes: [
+              {
+                finding_index: 0,
+                action: "rewrite_scene",
+                text: "書き換え",
+                fact_id: "",
+                reason: "連鎖するはず",
+              },
+            ],
+          });
+        }
+        return JSON.stringify({
+          violations: [
+            { rule: "canon", detail: "まだ矛盾している", severity: "medium" },
+          ],
+          notes: [],
+        });
+      },
+    });
+    const findings: { change_set_id: string; findings: unknown[] }[] = [];
+    const messages: { role: string; content: string }[] = [];
+    const createdChangeSets: {
+      work_id: string;
+      title: string;
+      ops: unknown[];
+      kind?: string;
+      message_id?: string | null;
+    }[] = [];
+    const ctx = makeCtx({
+      provider,
+      findings,
+      messages,
+      createdChangeSets,
+      changeSet: { ...CHANGE_SET, kind: "revision" },
+    });
+
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    // critic のみ — fixer は呼ばれない
+    expect(provider.calls).toBe(1);
+    expect(createdChangeSets).toHaveLength(0);
+    // 報告は通常通り (提案の文言は付かない)
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).not.toContain("提案しました");
+  });
+
+  it("findings が0件なら修正提案を作らない", async () => {
+    const provider = new StubProvider({
+      respond: () => JSON.stringify({ violations: [], notes: [] }),
+    });
+    const findings: { change_set_id: string; findings: unknown[] }[] = [];
+    const messages: { role: string; content: string }[] = [];
+    const createdChangeSets: {
+      work_id: string;
+      title: string;
+      ops: unknown[];
+      kind?: string;
+      message_id?: string | null;
+    }[] = [];
+    const ctx = makeCtx({ provider, findings, messages, createdChangeSets });
+
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    expect(provider.calls).toBe(1);
+    expect(createdChangeSets).toHaveLength(0);
   });
 });

@@ -18,6 +18,7 @@ import {
   ReviewFindingSchema,
   SceneRevisionSchema,
   SceneSchema,
+  textToTiptapDoc,
   tiptapDocToText,
   WorkSchema,
   WorkStatusSchema,
@@ -1581,6 +1582,16 @@ export async function computeChangeSetImpact(
           });
         }
       }
+    } else if (op.op === "rewrite_scene") {
+      // 本文書き換えは対象シーン自身が影響対象 (依存先の再検査はレビューに委ねる)
+      if (!scenes.has(op.scene_id)) {
+        const scene = await getSceneById(db, op.scene_id);
+        scenes.set(op.scene_id, {
+          id: op.scene_id,
+          title: scene?.title ?? "(不明なシーン)",
+          reason: "本文の書き換え対象",
+        });
+      }
     }
     // update_work: 構造情報の変更は個別シーンへの影響を列挙しない
   }
@@ -1685,7 +1696,9 @@ export async function applyChangeSet(
   // 楽観的競合 (spec §8.3): 提案時点から正典が変わっていたら通常承認は
   // 拒否する。正典に触れる ops (fact 系) を含む提案だけを対象にする
   // (update_work だけの提案が毎回 force を要求されるのを防ぐ)。
-  const touchesCanon = cs.ops.some((op) => op.op !== "update_work");
+  const touchesCanon = cs.ops.some(
+    (op) => op.op !== "update_work" && op.op !== "rewrite_scene",
+  );
   if (
     !input.force &&
     touchesCanon &&
@@ -1733,6 +1746,21 @@ export async function applyChangeSet(
         ...(p.charter !== undefined ? { charter: p.charter } : {}),
         ...(p.policy !== undefined ? { policy: p.policy } : {}),
       });
+    } else if (op.op === "rewrite_scene") {
+      // 本文書き換えは新リビジョンとして適用 (change_set_id 紐付き)。
+      // シーンが消えていればスキップする (適用自体は止めない)。
+      const scene = await getSceneById(db, op.scene_id);
+      if (scene) {
+        await createSceneRevision(db, {
+          sceneId: op.scene_id,
+          contentJson: textToTiptapDoc(op.text),
+          source: "ai",
+          changeSetId: cs.id,
+        });
+        if (scene.status !== "generated") {
+          await updateSceneStatus(db, { id: op.scene_id, status: "generated" });
+        }
+      }
     }
   }
 
