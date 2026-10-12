@@ -8,8 +8,12 @@ import {
   ChatRoleSchema,
   ChatThreadSchema,
   DependencyEdgeSchema,
+  EntityAliasSchema,
+  EntityKindSchema,
+  EntityWithAliasesSchema,
   EpisodeSchema,
   JobStatusSchema,
+  KnowledgeEventSchema,
   ProgressEventSchema,
   ProposalSchema,
   ProviderKeySchema,
@@ -18,6 +22,7 @@ import {
   ReviewFindingSchema,
   SceneRevisionSchema,
   SceneSchema,
+  StoryEntitySchema,
   textToTiptapDoc,
   tiptapDocToText,
   WorkSchema,
@@ -36,8 +41,11 @@ import {
   type ChatThread,
   type DependencyEdge,
   type DependencyEdgeInput,
+  type EntityAlias,
+  type EntityWithAliases,
   type Episode,
   type JobStatus,
+  type KnowledgeEvent,
   type ProgressEvent,
   type ProgressEventType,
   type PreApplyCheck,
@@ -50,11 +58,13 @@ import {
   type ReviewFinding,
   type Scene,
   type SceneRevision,
+  type StoryEntity,
   type Work,
   type WorkStatus,
   type WritingContract,
 } from "@houchi/contracts";
 import { checkForbidden, checkRequiredEvents } from "@houchi/validators";
+import { detectEntityMentions } from "@houchi/mentions";
 
 export * from "./schema.js";
 
@@ -799,6 +809,9 @@ function rowToCanonFact(r: Row): CanonFact {
     provenance: r.provenance,
     valid_from_rev: r.valid_from_rev ?? null,
     valid_to_rev: r.valid_to_rev ?? null,
+    // fact_ref は 0009 未適用の行/DB では列自体が無いことがあるので
+    // 未定義なら null (呼び出し側で id フォールバックする)。
+    fact_ref: r.fact_ref ?? null,
     created_at: r.created_at,
   });
 }
@@ -1072,6 +1085,11 @@ export async function addCanonFacts(
     `)) as Row[];
     added += rows.length;
   }
+  // fact_ref (0009 で追加した安定ID) が未設定の行は id で埋める
+  // (エンティティリンク・知識イベントは fact_ref を指す)。
+  await db.run(
+    sql`UPDATE canon_facts SET fact_ref = id WHERE fact_ref IS NULL`,
+  );
   return { canonFacts: await listCanonFactsByWork(db, input.workId), added };
 }
 
@@ -1254,6 +1272,240 @@ export async function listDependencyEdgesByWork(
         ORDER BY created_at ASC, id ASC`,
   )) as Row[];
   return rows.map(rowToDependencyEdge);
+}
+
+// ---------------------------------------------------------------------------
+// 知識追跡 MVP (spec §6.3-6.4): story_entities / entity_aliases /
+// fact_entities / knowledge_events。
+// entity_id / fact_ref はリビジョンを跨ぐ安定ID: 行の改定 (close→insert)
+// で id が変わってもリンクが切れないように、参照はすべて安定IDを指す。
+// ---------------------------------------------------------------------------
+
+function rowToStoryEntity(r: Row): StoryEntity {
+  return StoryEntitySchema.parse({
+    id: r.id,
+    entity_id: r.entity_id,
+    work_id: r.work_id,
+    kind: r.kind,
+    name: r.name,
+    summary: r.summary ?? "",
+    valid_from_rev: r.valid_from_rev ?? null,
+    valid_to_rev: r.valid_to_rev ?? null,
+    created_at: r.created_at,
+  });
+}
+
+function rowToEntityAlias(r: Row): EntityAlias {
+  return EntityAliasSchema.parse({
+    id: r.id,
+    entity_id: r.entity_id,
+    alias: r.alias,
+    created_at: r.created_at,
+  });
+}
+
+function rowToKnowledgeEvent(r: Row): KnowledgeEvent {
+  return KnowledgeEventSchema.parse({
+    id: r.id,
+    work_id: r.work_id,
+    entity_id: r.entity_id,
+    fact_id: r.fact_id,
+    scene_id: r.scene_id ?? null,
+    source: r.source ?? "記述",
+    valid_from_rev: r.valid_from_rev ?? null,
+    valid_to_rev: r.valid_to_rev ?? null,
+    created_at: r.created_at,
+  });
+}
+
+/** 現行の登場要素 (valid_to_rev IS NULL)。 */
+export async function listEntitiesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<StoryEntity[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM story_entities WHERE work_id = ${workId}
+        AND valid_to_rev IS NULL
+        ORDER BY kind ASC, name ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToStoryEntity);
+}
+
+/** 全履歴行 (現行+閉じた) — 時系列モデルの確認用。 */
+export async function listAllEntitiesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<StoryEntity[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM story_entities WHERE work_id = ${workId}
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToStoryEntity);
+}
+
+/** 安定ID (entity_id) で現行行を引く。 */
+export async function getCurrentEntityByEntityId(
+  db: DbLike,
+  entityId: string,
+): Promise<StoryEntity | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM story_entities WHERE entity_id = ${entityId}
+        AND valid_to_rev IS NULL`,
+  )) as Row | undefined;
+  return r ? rowToStoryEntity(r) : null;
+}
+
+/** entity_id 群の別名一覧。 */
+export async function listAliasesByEntityIds(
+  db: DbLike,
+  entityIds: readonly string[],
+): Promise<EntityAlias[]> {
+  if (entityIds.length === 0) return [];
+  const idList = sql.join(
+    entityIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const rows = (await db.all(
+    sql`SELECT * FROM entity_aliases WHERE entity_id IN (${idList})
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToEntityAlias);
+}
+
+/** エンティティ+別名セット (言及検出・プロンプト用)。 */
+export async function listEntitiesWithAliasesByWork(
+  db: DbLike,
+  workId: string,
+): Promise<EntityWithAliases[]> {
+  const entities = await listEntitiesByWork(db, workId);
+  const aliases = await listAliasesByEntityIds(
+    db,
+    entities.map((e) => e.entity_id),
+  );
+  const byEntity = new Map<string, string[]>();
+  for (const a of aliases) {
+    const list = byEntity.get(a.entity_id) ?? [];
+    list.push(a.alias);
+    byEntity.set(a.entity_id, list);
+  }
+  return entities.map((e) =>
+    EntityWithAliasesSchema.parse({ ...e, aliases: byEntity.get(e.entity_id) ?? [] }),
+  );
+}
+
+/** fact_ref → entity_id リンクの参照 (fact_entities)。 */
+export async function listEntityIdsByFactRefs(
+  db: DbLike,
+  factRefs: readonly string[],
+): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (factRefs.length === 0) return map;
+  const refList = sql.join(
+    factRefs.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const rows = (await db.all(
+    sql`SELECT fact_ref, entity_id FROM fact_entities
+        WHERE fact_ref IN (${refList})`,
+  )) as Row[];
+  for (const r of rows) {
+    const key = String(r.fact_ref);
+    const list = map.get(key) ?? [];
+    list.push(String(r.entity_id));
+    map.set(key, list);
+  }
+  return map;
+}
+
+/** entity_id → fact_ref リンクの参照 (影響分析「その entity を参照する正典」)。 */
+export async function listFactRefsByEntityIds(
+  db: DbLike,
+  entityIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (entityIds.length === 0) return map;
+  const idList = sql.join(
+    entityIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const rows = (await db.all(
+    sql`SELECT fact_ref, entity_id FROM fact_entities
+        WHERE entity_id IN (${idList})`,
+  )) as Row[];
+  for (const r of rows) {
+    const key = String(r.entity_id);
+    const list = map.get(key) ?? [];
+    list.push(String(r.fact_ref));
+    map.set(key, list);
+  }
+  return map;
+}
+
+/** fact_ref のエンティティリンクを全置換する。 */
+export async function setFactEntityLinks(
+  db: DbLike,
+  factRef: string,
+  entityIds: readonly string[],
+): Promise<void> {
+  await db.run(sql`DELETE FROM fact_entities WHERE fact_ref = ${factRef}`);
+  for (const entityId of entityIds) {
+    await db.run(sql`
+      INSERT INTO fact_entities (fact_ref, entity_id, created_at)
+      VALUES (${factRef}, ${entityId}, ${now()})
+      ON CONFLICT DO NOTHING
+    `);
+  }
+}
+
+/** fact_id (行id) または fact_ref から fact_ref を解決する。 */
+export async function resolveFactRef(
+  db: DbLike,
+  workId: string,
+  idOrRef: string,
+): Promise<string | null> {
+  const r = (await db.get(
+    sql`SELECT id, fact_ref FROM canon_facts
+        WHERE work_id = ${workId} AND (id = ${idOrRef} OR fact_ref = ${idOrRef})
+        ORDER BY (valid_to_rev IS NULL) DESC LIMIT 1`,
+  )) as Row | undefined;
+  if (!r) return null;
+  return (r.fact_ref as string | null) ?? (r.id as string);
+}
+
+/** 現行の知識イベント (valid_to_rev IS NULL)。 */
+export async function listKnowledgeEventsByWork(
+  db: DbLike,
+  workId: string,
+): Promise<KnowledgeEvent[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM knowledge_events WHERE work_id = ${workId}
+        AND valid_to_rev IS NULL
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToKnowledgeEvent);
+}
+
+/** ある人物 (entity_id) が知っている現行イベント。 */
+export async function listKnowledgeEventsByEntity(
+  db: DbLike,
+  entityId: string,
+): Promise<KnowledgeEvent[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM knowledge_events WHERE entity_id = ${entityId}
+        AND valid_to_rev IS NULL
+        ORDER BY created_at ASC, id ASC`,
+  )) as Row[];
+  return rows.map(rowToKnowledgeEvent);
+}
+
+export async function getKnowledgeEventById(
+  db: DbLike,
+  id: string,
+): Promise<KnowledgeEvent | null> {
+  const r = (await db.get(
+    sql`SELECT * FROM knowledge_events WHERE id = ${id}`,
+  )) as Row | undefined;
+  return r ? rowToKnowledgeEvent(r) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1536,9 +1788,15 @@ export async function computeChangeSetImpact(
     string,
     { id: string; scene_id: string; reason: string }
   >();
+  const entities = new Map<
+    string,
+    { id: string; name: string; reason: string }
+  >();
 
   const edges = await listDependencyEdgesByWork(db, input.workId);
   const currentFacts = await listCanonFactsByWork(db, input.workId);
+  const allEntities = await listEntitiesWithAliasesByWork(db, input.workId);
+  const entityById = new Map(allEntities.map((e) => [e.entity_id, e]));
 
   const linkContractsForScene = async (sceneId: string) => {
     const contract = await getLatestContractByScene(db, sceneId);
@@ -1551,6 +1809,117 @@ export async function computeChangeSetImpact(
     }
   };
 
+  // 影響対象のエンティティを1件登録する。
+  const addEntity = (entityId: string, reason: string) => {
+    const e = entityById.get(entityId);
+    if (!e || entities.has(entityId)) return;
+    entities.set(entityId, { id: entityId, name: e.name, reason });
+  };
+
+  const addScene = async (sceneId: string, reason: string) => {
+    if (scenes.has(sceneId)) return;
+    const scene = await getSceneById(db, sceneId);
+    scenes.set(sceneId, {
+      id: sceneId,
+      title: scene?.title ?? "(不明なシーン)",
+      reason,
+    });
+  };
+
+  // シーン本文の遅延キャッシュ (言及の副経路走査用)。
+  const proseCache = new Map<string, string>();
+  const sceneProse = async (sceneId: string): Promise<string> => {
+    if (!proseCache.has(sceneId)) {
+      const revs = await listRevisionsByScene(db, sceneId);
+      const latest = revs.at(-1);
+      proseCache.set(
+        sceneId,
+        latest ? tiptapDocToText(latest.content_json) : "",
+      );
+    }
+    return proseCache.get(sceneId)!;
+  };
+  let workScenes: Scene[] | null = null;
+
+  /**
+   * 「そのエンティティを言及するシーン」の副経路 (spec §6.6):
+   * dependency_edges の言及エッジ (target_kind="mention", target_ref=entity_id)
+   * + エッジ未記録のシーンは本文をエイリアス辞書でその場走査する。
+   */
+  const scenesMentioning = async (entityId: string, reason: string) => {
+    const e = entityById.get(entityId);
+    if (!e) return;
+    let usedEdge = false;
+    for (const edge of edges) {
+      if (edge.target_kind === "mention" && edge.target_ref === entityId) {
+        usedEdge = true;
+        await addScene(edge.scene_id, reason);
+      }
+    }
+    if (usedEdge) return;
+    workScenes ??= await listScenesByWork(db, input.workId);
+    for (const scene of workScenes) {
+      const prose = await sceneProse(scene.id);
+      if (!prose) continue;
+      const mentions = detectEntityMentions(prose, [
+        { id: e.entity_id, name: e.name, aliases: e.aliases },
+      ]);
+      if (mentions.length > 0) await addScene(scene.id, reason);
+    }
+  };
+
+  /** 正典の依存宣言先シーンを登録する (依存エッジ経路)。 */
+  const scenesDependingOnFact = async (fact: CanonFact, _reason: string) => {
+    for (const edge of edges) {
+      if (edge.target_kind !== "canon_fact") continue;
+      if (
+        edge.target_ref === fact.id ||
+        edge.target_ref === (fact.fact_ref ?? "") ||
+        statementsMatch(edge.target_ref, fact.statement)
+      ) {
+        await addScene(edge.scene_id, `依存宣言「${edge.target_ref}」`);
+      }
+    }
+  };
+
+  /**
+   * エンティティを影響対象に据えたときの共通展開: その entity を参照する
+   * 現行正典 + その正典に依存/言及するシーン (spec §6.4 影響分析)。
+   */
+  const expandEntityImpact = async (entityId: string) => {
+    const linked = await listFactRefsByEntityIds(db, [entityId]);
+    const refs = linked.get(entityId) ?? [];
+    for (const fact of currentFacts) {
+      const ref = fact.fact_ref ?? fact.id;
+      if (!refs.includes(ref)) continue;
+      if (!facts.has(fact.id)) {
+        facts.set(fact.id, {
+          id: fact.id,
+          statement: fact.statement,
+          reason: "影響する登場要素に紐付く正典",
+        });
+      }
+      await scenesDependingOnFact(
+        fact,
+        `登場要素に紐付く正典「${fact.statement}」の依存`,
+      );
+    }
+    await scenesMentioning(entityId, `登場要素「${entityById.get(entityId)?.name ?? entityId}」への言及`);
+  };
+
+  /** fact 経路で繋がるエンティティを拾い、その言及シーンも影響に入れる。 */
+  const expandFactEntityPaths = async (fact: CanonFact) => {
+    const linked = await listEntityIdsByFactRefs(db, [fact.fact_ref ?? fact.id]);
+    const ids = linked.get(fact.fact_ref ?? fact.id) ?? [];
+    for (const entityId of ids) {
+      addEntity(entityId, "変更対象の正典に紐付く登場要素");
+      await scenesMentioning(
+        entityId,
+        `正典変更に紐付く登場要素「${entityById.get(entityId)?.name ?? entityId}」への言及`,
+      );
+    }
+  };
+
   for (const op of input.ops) {
     if (
       op.op === "retire_fact" ||
@@ -1560,22 +1929,9 @@ export async function computeChangeSetImpact(
       const fact = await getCanonFactById(db, op.fact_id);
       if (!fact) continue;
       // 依存宣言で繋がる scenes
-      for (const edge of edges) {
-        if (edge.target_kind !== "canon_fact") continue;
-        if (
-          edge.target_ref === fact.id ||
-          statementsMatch(edge.target_ref, fact.statement)
-        ) {
-          if (!scenes.has(edge.scene_id)) {
-            const scene = await getSceneById(db, edge.scene_id);
-            scenes.set(edge.scene_id, {
-              id: edge.scene_id,
-              title: scene?.title ?? "(不明なシーン)",
-              reason: `依存宣言「${edge.target_ref}」`,
-            });
-          }
-        }
-      }
+      await scenesDependingOnFact(fact, "依存宣言");
+      // その fact の entity_refs に繋がる登場要素を言及するシーン (副経路)
+      await expandFactEntityPaths(fact);
       // 文面が近い他の現行正典 (確度変更は文面を変えないので対象外)
       if (op.op === "set_fact_commitment") continue;
       for (const other of currentFacts) {
@@ -1621,6 +1977,58 @@ export async function computeChangeSetImpact(
           reason: "本文の書き換え対象",
         });
       }
+    } else if (op.op === "add_entity") {
+      // 新規エンティティはまだ参照を持たないので impact には出さない
+      // (同名の既存エンティティがあればそれが影響対象)。
+      const dup = allEntities.find(
+        (e) => e.kind === op.kind && e.name === op.name,
+      );
+      if (dup) addEntity(dup.entity_id, "同名同種の既存登場要素");
+    } else if (op.op === "update_entity" || op.op === "retire_entity") {
+      const entity = entityById.get(op.entity_id);
+      addEntity(
+        op.entity_id,
+        op.op === "update_entity" ? "登場要素の更新対象" : "登場要素の廃止対象",
+      );
+      if (entity) await expandEntityImpact(op.entity_id);
+    } else if (
+      op.op === "add_knowledge_event" ||
+      op.op === "retract_knowledge_event"
+    ) {
+      // 知識イベントは対象 fact/entity と同じ経路を影響に含める。
+      let entityId: string | null = null;
+      let factIdOrRef: string | null = null;
+      if (op.op === "add_knowledge_event") {
+        entityId = op.entity_id;
+        factIdOrRef = op.fact_id;
+      } else {
+        const ev = await getKnowledgeEventById(db, op.event_id);
+        if (ev) {
+          entityId = ev.entity_id;
+          factIdOrRef = ev.fact_id;
+        }
+      }
+      if (entityId) {
+        addEntity(entityId, "知識イベントの対象人物");
+        await expandEntityImpact(entityId);
+      }
+      if (factIdOrRef) {
+        const factRef = await resolveFactRef(db, input.workId, factIdOrRef);
+        const fact = currentFacts.find(
+          (f) => (f.fact_ref ?? f.id) === factRef || f.id === factIdOrRef,
+        );
+        if (fact) {
+          if (!facts.has(fact.id)) {
+            facts.set(fact.id, {
+              id: fact.id,
+              statement: fact.statement,
+              reason: "知識イベントの対象正典",
+            });
+          }
+          await scenesDependingOnFact(fact, "知識イベント対象正典の依存");
+          await expandFactEntityPaths(fact);
+        }
+      }
     }
     // update_work: 構造情報の変更は個別シーンへの影響を列挙しない
   }
@@ -1633,6 +2041,7 @@ export async function computeChangeSetImpact(
   if (scenes.size > 0) parts.push(`シーン ${scenes.size} 件`);
   if (facts.size > 0) parts.push(`正典 ${facts.size} 件`);
   if (contracts.size > 0) parts.push(`契約 ${contracts.size} 件`);
+  if (entities.size > 0) parts.push(`登場要素 ${entities.size} 件`);
   const summary =
     parts.length > 0
       ? `${parts.join("・")}に影響する可能性`
@@ -1642,6 +2051,7 @@ export async function computeChangeSetImpact(
     scenes: [...scenes.values()],
     facts: [...facts.values()],
     contracts: [...contracts.values()],
+    entities: [...entities.values()],
     summary,
   };
 }
@@ -1661,6 +2071,7 @@ export function manualEditImpact(input: {
     ],
     facts: [],
     contracts: [],
+    entities: [],
     summary: "手編集による本文の変更",
   };
 }
@@ -1714,6 +2125,17 @@ export async function verifyChangeSetForApply(
       });
     }
   }
+  const recordedEntities = new Set(
+    (cs.impact.entities ?? []).map((e) => e.id),
+  );
+  for (const e of current.entities) {
+    if (!recordedEntities.has(e.id)) {
+      warnings.push({
+        kind: "impact_grew",
+        detail: `登場要素「${e.name}」が新たに影響対象に入りました (${e.reason})`,
+      });
+    }
+  }
 
   // (b) ops の構造検証: 参照先の存在と、fact ops の対象の現行性。
   const sceneCache = new Map<string, Scene | null>();
@@ -1743,6 +2165,66 @@ export async function verifyChangeSetForApply(
           kind: "missing_ref",
           detail: `書き換え対象のシーンが見つかりません (scene_id=${op.scene_id})。シーンが削除・再構成された可能性があります`,
         });
+      }
+    } else if (op.op === "update_entity" || op.op === "retire_entity") {
+      const entity = await getCurrentEntityByEntityId(db, op.entity_id);
+      if (!entity || entity.work_id !== cs.work_id) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `対象の登場要素が見つかりません (entity_id=${op.entity_id})。既に廃止された可能性があります`,
+        });
+      }
+    } else if (op.op === "add_knowledge_event") {
+      const entity = await getCurrentEntityByEntityId(db, op.entity_id);
+      if (!entity || entity.work_id !== cs.work_id) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `知識イベントの対象人物が見つかりません (entity_id=${op.entity_id})`,
+        });
+      }
+      const factRef = await resolveFactRef(db, cs.work_id, op.fact_id);
+      if (!factRef) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `知識イベントの対象正典が見つかりません (fact_id=${op.fact_id})`,
+        });
+      }
+      if (op.scene_id !== undefined) {
+        const scene = await sceneOf(op.scene_id);
+        if (!scene) {
+          warnings.push({
+            kind: "missing_ref",
+            detail: `知識イベントの起点シーンが見つかりません (scene_id=${op.scene_id})。scene_id なしで記録されます`,
+          });
+        }
+      }
+    } else if (op.op === "retract_knowledge_event") {
+      const ev = await getKnowledgeEventById(db, op.event_id);
+      if (!ev || ev.work_id !== cs.work_id) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `取消対象の知識イベントが見つかりません (event_id=${op.event_id})`,
+        });
+      } else if (ev.valid_to_rev !== null) {
+        violations.push({
+          kind: "stale_fact",
+          detail: `取消対象の知識イベントは rev${ev.valid_to_rev} で既に閉じられています`,
+        });
+      }
+    }
+    // fact 系 ops の entity_refs: 参照する登場要素が現行であること。
+    if (
+      (op.op === "add_fact" || op.op === "revise_fact") &&
+      op.entity_refs !== undefined
+    ) {
+      for (const entityId of op.entity_refs) {
+        const entity = await getCurrentEntityByEntityId(db, entityId);
+        if (!entity || entity.work_id !== cs.work_id) {
+          violations.push({
+            kind: "missing_ref",
+            detail: `正典に紐付ける登場要素が見つかりません (entity_id=${entityId})`,
+          });
+        }
       }
     }
     // add_fact / update_work は参照先を持たないので検査対象なし。
@@ -1811,17 +2293,154 @@ async function insertCanonFactRev(
     disclosure: string;
     provenance: string;
     validFromRev: number;
+    /** 改定元の安定ID。省略時は新しい行の id が fact_ref になる。 */
+    factRef?: string | undefined;
   },
-): Promise<void> {
-  await db.all(sql`
+): Promise<{ id: string; factRef: string } | null> {
+  const id = crypto.randomUUID();
+  const factRef = input.factRef ?? id;
+  const rows = (await db.all(sql`
     INSERT INTO canon_facts
       (id, work_id, statement, commitment, disclosure, provenance,
-       valid_from_rev, valid_to_rev, created_at)
-    VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.statement},
+       valid_from_rev, valid_to_rev, fact_ref, created_at)
+    VALUES (${id}, ${input.workId}, ${input.statement},
             ${input.commitment}, ${input.disclosure},
-            ${input.provenance}, ${input.validFromRev}, NULL, ${now()})
+            ${input.provenance}, ${input.validFromRev}, NULL,
+            ${factRef}, ${now()})
     ON CONFLICT DO NOTHING
     RETURNING id
+  `)) as Row[];
+  if (rows.length > 0) return { id, factRef };
+  // 文面の完全一致で挿入がスキップされた場合は現行行を引いて返す。
+  const existing = (await db.get(
+    sql`SELECT id, fact_ref FROM canon_facts
+        WHERE work_id = ${input.workId} AND statement = ${input.statement}
+          AND valid_to_rev IS NULL`,
+  )) as Row | undefined;
+  if (!existing) return null;
+  return {
+    id: existing.id as string,
+    factRef: (existing.fact_ref as string | null) ?? (existing.id as string),
+  };
+}
+
+/** 正典のエンティティリンクを全置換 (entity_refs 指定時)。 */
+async function applyFactEntityRefs(
+  db: DbLike,
+  factRef: string,
+  entityRefs: readonly string[] | undefined,
+): Promise<void> {
+  if (entityRefs === undefined) return;
+  const dedup = [...new Set(entityRefs)];
+  await setFactEntityLinks(db, factRef, dedup);
+}
+
+/** add_entity: 新行を挿入 (同 kind+name の現行行があるときは別名だけ吸収する)。 */
+async function applyAddEntity(
+  db: DbLike,
+  input: {
+    workId: string;
+    op: Extract<ChangeSetOp, { op: "add_entity" }>;
+    newRev: number;
+  },
+): Promise<void> {
+  const entityId = crypto.randomUUID();
+  await db.run(sql`
+    INSERT INTO story_entities
+      (id, entity_id, work_id, kind, name, summary,
+       valid_from_rev, valid_to_rev, created_at)
+    VALUES (${crypto.randomUUID()}, ${entityId}, ${input.workId},
+            ${input.op.kind}, ${input.op.name}, ${input.op.summary},
+            ${input.newRev}, NULL, ${now()})
+    ON CONFLICT DO NOTHING
+  `);
+  // 同名同種の現行行が既にあった場合はその entity_id に別名を寄せる。
+  const row = (await db.get(
+    sql`SELECT entity_id FROM story_entities
+        WHERE work_id = ${input.workId} AND kind = ${input.op.kind}
+          AND name = ${input.op.name} AND valid_to_rev IS NULL`,
+  )) as Row | undefined;
+  if (!row) return;
+  const targetId = row.entity_id as string;
+  for (const alias of new Set(input.op.aliases)) {
+    await db.run(sql`
+      INSERT INTO entity_aliases (id, entity_id, alias, created_at)
+      VALUES (${crypto.randomUUID()}, ${targetId}, ${alias}, ${now()})
+      ON CONFLICT DO NOTHING
+    `);
+  }
+}
+
+/** update_entity: 旧行を閉じて新行を挿入 (時系列。entity_id は引き継ぐ)。 */
+async function applyUpdateEntity(
+  db: DbLike,
+  input: {
+    workId: string;
+    op: Extract<ChangeSetOp, { op: "update_entity" }>;
+    newRev: number;
+  },
+): Promise<void> {
+  const old = await getCurrentEntityByEntityId(db, input.op.entity_id);
+  if (!old || old.work_id !== input.workId) return;
+  await db.run(sql`
+    UPDATE story_entities SET valid_to_rev = ${input.newRev}
+    WHERE entity_id = ${old.entity_id} AND valid_to_rev IS NULL
+  `);
+  await db.run(sql`
+    INSERT INTO story_entities
+      (id, entity_id, work_id, kind, name, summary,
+       valid_from_rev, valid_to_rev, created_at)
+    VALUES (${crypto.randomUUID()}, ${old.entity_id}, ${input.workId},
+            ${old.kind}, ${input.op.name ?? old.name},
+            ${input.op.summary ?? old.summary},
+            ${input.newRev}, NULL, ${now()})
+    ON CONFLICT DO NOTHING
+  `);
+  for (const alias of new Set(input.op.add_aliases ?? [])) {
+    await db.run(sql`
+      INSERT INTO entity_aliases (id, entity_id, alias, created_at)
+      VALUES (${crypto.randomUUID()}, ${old.entity_id}, ${alias}, ${now()})
+      ON CONFLICT DO NOTHING
+    `);
+  }
+  for (const alias of new Set(input.op.remove_aliases ?? [])) {
+    await db.run(sql`
+      DELETE FROM entity_aliases
+      WHERE entity_id = ${old.entity_id} AND alias = ${alias}
+    `);
+  }
+}
+
+/**
+ * add_knowledge_event: fact_id は行 id / fact_ref どちらでも受け、
+ * fact_ref に解決して記録する (spec §6.4)。同人物×同事実の現行イベントが
+ * 既にある場合は重複記録しない。
+ */
+async function applyAddKnowledgeEvent(
+  db: DbLike,
+  input: {
+    workId: string;
+    op: Extract<ChangeSetOp, { op: "add_knowledge_event" }>;
+    newRev: number;
+  },
+): Promise<void> {
+  const factRef = await resolveFactRef(db, input.workId, input.op.fact_id);
+  if (!factRef) return;
+  const entity = await getCurrentEntityByEntityId(db, input.op.entity_id);
+  if (!entity || entity.work_id !== input.workId) return;
+  const dup = (await db.get(
+    sql`SELECT id FROM knowledge_events
+        WHERE entity_id = ${input.op.entity_id} AND fact_id = ${factRef}
+          AND valid_to_rev IS NULL`,
+  )) as Row | undefined;
+  if (dup) return;
+  await db.run(sql`
+    INSERT INTO knowledge_events
+      (id, work_id, entity_id, fact_id, scene_id, source,
+       valid_from_rev, valid_to_rev, created_at)
+    VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.op.entity_id},
+            ${factRef}, ${input.op.scene_id ?? null}, ${input.op.source},
+            ${input.newRev}, NULL, ${now()})
   `);
 }
 
@@ -1830,6 +2449,8 @@ async function insertCanonFactRev(
  * - retire_fact: valid_to_rev を新 rev に設定して閉じる
  * - revise_fact: 旧行を閉じ、新行を valid_from_rev=新 rev で挿入
  * - add_fact: 新行を挿入
+ * - entity 系: add/update/retire (時系列モデル) + fact_entities リンク
+ * - knowledge_event 系: 誰が何を知ったかの記録/取消
  * - update_work: works の構造情報をパッチ
  * force=true のとき kind=force_override に昇格する (spec §5.4)。
  * 適用済みの変更セットは冪等に現状を返す。
@@ -1879,7 +2500,7 @@ export async function applyChangeSet(
         validToRev: newRev,
       });
       if (closed) {
-        await insertCanonFactRev(db, {
+        const inserted = await insertCanonFactRev(db, {
           workId: cs.work_id,
           statement: op.new_statement,
           // commitment/disclosure もリビジョンの一部: 指定がなければ旧行を引き継ぐ
@@ -1887,10 +2508,16 @@ export async function applyChangeSet(
           disclosure: op.disclosure ?? old?.disclosure ?? "normal",
           provenance,
           validFromRev: newRev,
+          // 安定IDを引き継ぐので、旧行へのエンティティリンク・知識
+          // イベントはそのまま新しい文面を指し続ける (spec §6.4)。
+          factRef: old?.fact_ref ?? old?.id,
         });
+        if (inserted && op.entity_refs !== undefined) {
+          await applyFactEntityRefs(db, inserted.factRef, op.entity_refs);
+        }
       }
     } else if (op.op === "add_fact") {
-      await insertCanonFactRev(db, {
+      const inserted = await insertCanonFactRev(db, {
         workId: cs.work_id,
         statement: op.statement,
         commitment: op.commitment ?? "fixed",
@@ -1898,6 +2525,9 @@ export async function applyChangeSet(
         provenance,
         validFromRev: newRev,
       });
+      if (inserted && op.entity_refs !== undefined) {
+        await applyFactEntityRefs(db, inserted.factRef, op.entity_refs);
+      }
     } else if (op.op === "set_fact_commitment") {
       // 確度/開示の変更もリビジョンとして記録する (旧行を閉じて新行を挿入)
       const old = await getCanonFactById(db, op.fact_id);
@@ -1913,8 +2543,31 @@ export async function applyChangeSet(
           disclosure: op.disclosure ?? old.disclosure,
           provenance,
           validFromRev: newRev,
+          factRef: old.fact_ref ?? old.id,
         });
       }
+    } else if (op.op === "add_entity") {
+      await applyAddEntity(db, { workId: cs.work_id, op, newRev });
+    } else if (op.op === "update_entity") {
+      await applyUpdateEntity(db, { workId: cs.work_id, op, newRev });
+    } else if (op.op === "retire_entity") {
+      await db.run(sql`
+        UPDATE story_entities SET valid_to_rev = ${newRev}
+        WHERE entity_id = ${op.entity_id} AND work_id = ${cs.work_id}
+          AND valid_to_rev IS NULL
+      `);
+    } else if (op.op === "add_knowledge_event") {
+      await applyAddKnowledgeEvent(db, {
+        workId: cs.work_id,
+        op,
+        newRev,
+      });
+    } else if (op.op === "retract_knowledge_event") {
+      await db.run(sql`
+        UPDATE knowledge_events SET valid_to_rev = ${newRev}
+        WHERE id = ${op.event_id} AND work_id = ${cs.work_id}
+          AND valid_to_rev IS NULL
+      `);
     } else if (op.op === "update_work") {
       const p = op.patch;
       await patchWork(db, {

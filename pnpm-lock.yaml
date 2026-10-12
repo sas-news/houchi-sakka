@@ -137,6 +137,9 @@ importers:
       '@houchi/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@houchi/mentions':
+        specifier: workspace:*
+        version: link:../mentions
       '@houchi/validators':
         specifier: workspace:*
         version: link:../validators
@@ -168,6 +171,9 @@ importers:
       '@houchi/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@houchi/mentions':
+        specifier: workspace:*
+        version: link:../mentions
       '@houchi/prompts':
         specifier: workspace:*
         version: link:../prompts
@@ -183,6 +189,22 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(lightningcss@1.33.0)(supports-color@10.2.2)(tsx@4.23.15)
+
+  packages/mentions:
+    dependencies:
+      '@houchi/validators':
+        specifier: workspace:*
+        version: link:../validators
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

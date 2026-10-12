@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@houchi/contracts": ["../contracts/src/index.ts"],
+      "@houchi/validators": ["../validators/src/index.ts"]
+    },
+    "rootDir": "../.."
+  },
+  "include": ["src", "test"]
+}

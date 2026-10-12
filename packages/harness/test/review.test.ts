@@ -45,6 +45,7 @@ const CHANGE_SET: ChangeSetWithFindings = {
     scenes: [{ id: "s1", title: "廃線ホーム", reason: "依存" }],
     facts: [],
     contracts: [],
+    entities: [],
     summary: "シーン 1件",
   },
   force: 0,

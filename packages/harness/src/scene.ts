@@ -4,7 +4,9 @@ import {
   textToTiptapDoc,
   type CanonFact,
   type DependencyEdgeInput,
+  type EntityWithAliases,
   type GenerateSceneResult,
+  type KnowledgeEvent,
   type Scene,
   type Work,
   type WritingContract,
@@ -15,7 +17,12 @@ import {
   type CriticOutput,
   type WriterOutput,
 } from "@houchi/skills";
-import { toCriticOutput, validateProse } from "@houchi/validators";
+import { detectEntityMentions } from "@houchi/mentions";
+import {
+  normalizeText,
+  toCriticOutput,
+  validateProse,
+} from "@houchi/validators";
 import type { JobHandler } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
@@ -28,6 +35,76 @@ export interface SceneContextData {
   canon_facts: CanonFact[];
   /** 直前シーンのタイトル+抜粋 (接続の材料)。 */
   prev_scenes: { id: string; title: string; excerpt: string }[];
+  /** 現行の登場要素+別名 (POV 解決・言及検出に使う, spec §6.4)。 */
+  entities?: EntityWithAliases[];
+  /** 現行の知識イベント (誰が何を知っているか)。 */
+  knowledge_events?: KnowledgeEvent[];
+}
+
+/**
+ * contract.pov (自由文) から視点人物のエンティティを引く。
+ * 名前・別名の正規化一致 → pov 文字列に含まれる最長の表記、の順で拾う。
+ */
+export function resolvePovEntity(
+  pov: string,
+  entities: readonly EntityWithAliases[],
+): EntityWithAliases | undefined {
+  const np = normalizeText(pov);
+  if (np.length === 0) return undefined;
+  const surfaces = (e: EntityWithAliases) => [e.name, ...e.aliases];
+  for (const e of entities) {
+    if (surfaces(e).some((s) => normalizeText(s) === np)) return e;
+  }
+  let best: { e: EntityWithAliases; len: number } | undefined;
+  for (const e of entities) {
+    for (const s of surfaces(e)) {
+      const ns = normalizeText(s);
+      if (ns.length >= 2 && np.includes(ns) && (best === undefined || ns.length > best.len)) {
+        best = { e, len: ns.length };
+      }
+    }
+  }
+  return best?.e;
+}
+
+/**
+ * 視点人物が正当に知っている事実の集合 (spec §6.4 MVP)。
+ * KnowledgeEvent (entity=POV人物, 現行) の fact_ref 群 + 契約の知識宣言に
+ * 一致する正典文 (statement の部分一致) の fact_ref を返す。
+ */
+function knownFactsForPov(
+  povEntity: EntityWithAliases | undefined,
+  knowledgeEvents: readonly KnowledgeEvent[],
+  canonFacts: readonly CanonFact[],
+  knowledgeNotes: string,
+): { factRefs: Set<string>; statements: string[] } {
+  const factRefs = new Set<string>();
+  const statements: string[] = [];
+  const refOf = (f: CanonFact) => f.fact_ref ?? f.id;
+  const factByRef = new Map(canonFacts.map((f) => [refOf(f), f]));
+  if (povEntity) {
+    for (const ev of knowledgeEvents) {
+      if (ev.entity_id !== povEntity.entity_id) continue;
+      if (ev.valid_to_rev !== null) continue;
+      factRefs.add(ev.fact_id);
+      const f = factByRef.get(ev.fact_id);
+      if (f) statements.push(f.statement);
+    }
+  }
+  // 契約の knowledge_notes で宣言された知識: 宣言文が正典文に含まれる
+  // (またはその逆) ものを「知っている」とみなす (MVP の緩い一致)。
+  const notes = knowledgeNotes.trim();
+  if (notes.length > 0) {
+    const nn = normalizeText(notes);
+    for (const f of canonFacts) {
+      const ns = normalizeText(f.statement);
+      if (ns.length >= 4 && (nn.includes(ns) || ns.includes(nn))) {
+        factRefs.add(refOf(f));
+      }
+    }
+    statements.push(`(契約の知識宣言) ${notes}`);
+  }
+  return { factRefs, statements };
 }
 
 function countSeverities(critique: CriticOutput): {
@@ -94,6 +171,26 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
           .join("\n")
       : undefined;
 
+  // POV 知識 (spec §6.4 MVP): 視点人物の KnowledgeEvent + 契約の知識宣言を
+  // writer/critic のプロンプトと決定的検査の両方に渡す。
+  const entities = sceneCtx.entities ?? [];
+  const povEntity = resolvePovEntity(contract.payload.pov, entities);
+  const povKnowledge = knownFactsForPov(
+    povEntity,
+    sceneCtx.knowledge_events ?? [],
+    canonFacts,
+    contract.payload.knowledge_notes,
+  );
+  const povKnowledgeOpt =
+    povKnowledge.statements.length > 0
+      ? { pov_knowledge: povKnowledge.statements }
+      : {};
+  const entitiesForMentions = entities.map((e) => ({
+    id: e.entity_id,
+    name: e.name,
+    aliases: e.aliases,
+  }));
+
   // --- 1. write: writer スキルでドラフト --------------------------------
   let draft = checkpoint.draft as WriterOutput | undefined;
   if (!draft) {
@@ -111,6 +208,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         ...(payload.instruction !== undefined
           ? { instruction: payload.instruction }
           : {}),
+        ...povKnowledgeOpt,
       },
       model: payload.model,
       providerName: payload.provider,
@@ -131,6 +229,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
       validateProse(draft.prose_md, {
         contract: contract.payload,
         canonFacts: sceneCtx.canon_facts,
+        knownFactIds: povKnowledge.factRefs,
       }),
     );
     const aiCritique = await runSkillStep(ctx, {
@@ -141,6 +240,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         scene_title: sceneCtx.scene.title,
         prose_md: draft.prose_md,
         canon_facts: canonFacts,
+        ...povKnowledgeOpt,
       },
       model: payload.model,
       providerName: payload.provider,
@@ -175,6 +275,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         ...(payload.instruction !== undefined
           ? { instruction: payload.instruction }
           : {}),
+        ...povKnowledgeOpt,
       },
       model: payload.model,
       providerName: payload.provider,
@@ -219,8 +320,21 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
   }
 
   // depends_on の記録 (完全一致重複は repository 側でスキップ)
+  // + 本文中のエンティティ言及を副経路エッジ (kind="mention") として記録
+  // (spec §6.6: 宣言分と併存し、影響分析の言及経路に使う)。
   if (checkpoint.deps_recorded !== true) {
-    if (output.depends_on.length > 0) {
+    const mentionEdges: DependencyEdgeInput[] = detectEntityMentions(
+      output.prose_md,
+      entitiesForMentions,
+    ).map((entityId) => ({
+      target_kind: "mention",
+      target_ref: entityId,
+    }));
+    const edges = [
+      ...(output.depends_on as DependencyEdgeInput[]),
+      ...mentionEdges,
+    ];
+    if (edges.length > 0) {
       if (!ctx.recordDependencies) {
         throw new Error("generate_scene dependency persistence is not wired");
       }
@@ -228,7 +342,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
       await ctx.recordDependencies({
         scene_id: payload.scene_id,
         work_id: sceneCtx.work.id,
-        edges: output.depends_on as DependencyEdgeInput[],
+        edges,
       });
     }
     await ctx.saveCheckpoint({ deps_recorded: true });

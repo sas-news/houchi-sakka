@@ -195,10 +195,17 @@ export const canonFacts = sqliteTable(
     validFromRev: integer("valid_from_rev"),
     /** 閉じられた正典リビジョン (NULL=現行)。 */
     validToRev: integer("valid_to_rev"),
+    /**
+     * リビジョン跨ぎの安定ID (spec §6.4)。revise/set_commitment で新行になる
+     * 際に引き継がれる。エンティティリンク・知識イベントはこちらを指す。
+     * 0009 より前の既存行は id と同じ値。
+     */
+    factRef: text("fact_ref"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
     index("canon_facts_work_idx").on(t.workId),
+    index("canon_facts_fact_ref_idx").on(t.factRef),
     // statement 完全一致の重複を「現行行」のみで防ぐ
     // (閉じた行は同じ statement を再登録できるように partial unique)
     uniqueIndex("canon_facts_work_statement_current_uq")
@@ -355,6 +362,93 @@ export const releases = sqliteTable(
     uniqueIndex("releases_episode_rev_uq").on(t.episodeId, t.revNo),
     index("releases_work_idx").on(t.workId),
     index("releases_episode_idx").on(t.episodeId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// 知識追跡 MVP (spec §6.3-6.4): StoryEntity + EntityAlias + fact_entities
+// + KnowledgeEvent。id はリビジョン行のPK、entity_id/fact_ref は
+// リビジョンを跨ぐ安定ID。
+// ---------------------------------------------------------------------------
+
+export const storyEntities = sqliteTable(
+  "story_entities",
+  {
+    id: text("id").primaryKey(),
+    /** リビジョンを跨ぐ安定ID (aliases/edges/knowledge_events はこちらを指す)。 */
+    entityId: text("entity_id").notNull(),
+    workId: text("work_id").notNull(),
+    /** character | place | org | item | concept */
+    kind: text("kind").notNull(),
+    name: text("name").notNull(),
+    summary: text("summary").notNull().default(""),
+    validFromRev: integer("valid_from_rev"),
+    validToRev: integer("valid_to_rev"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("story_entities_work_idx").on(t.workId),
+    index("story_entities_entity_idx").on(t.entityId),
+    // 同一作品内で同 kind+name の現行エンティティは1件まで
+    uniqueIndex("story_entities_work_kind_name_uq")
+      .on(t.workId, t.kind, t.name)
+      .where(sql`valid_to_rev IS NULL`),
+  ],
+);
+
+export const entityAliases = sqliteTable(
+  "entity_aliases",
+  {
+    id: text("id").primaryKey(),
+    /** 安定ID側 (entity_id) を指す。 */
+    entityId: text("entity_id").notNull(),
+    /** 別名・表記揺れ・愛称。 */
+    alias: text("alias").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("entity_aliases_entity_idx").on(t.entityId),
+    uniqueIndex("entity_aliases_entity_alias_uq").on(t.entityId, t.alias),
+  ],
+);
+
+/** 正典とエンティティのリンク (spec §6.4「自然言語文+関連エンティティ」)。 */
+export const factEntities = sqliteTable(
+  "fact_entities",
+  {
+    /** canon_facts.fact_ref (安定ID) を指すので改定で切れない。 */
+    factRef: text("fact_ref").notNull(),
+    /** story_entities.entity_id (安定ID)。 */
+    entityId: text("entity_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("fact_entities_fact_entity_uq").on(t.factRef, t.entityId),
+    index("fact_entities_entity_idx").on(t.entityId),
+  ],
+);
+
+export const knowledgeEvents = sqliteTable(
+  "knowledge_events",
+  {
+    id: text("id").primaryKey(),
+    workId: text("work_id").notNull(),
+    /** 知った人物の entity_id (安定ID)。 */
+    entityId: text("entity_id").notNull(),
+    /** 何を知ったか: canon_facts.fact_ref (安定ID)。 */
+    factId: text("fact_id").notNull(),
+    /** どこで知ったか (scenes.id。任意)。 */
+    sceneId: text("scene_id"),
+    /** 情報源: 目撃/伝聞/推論/記述 など (TEXT 自由)。 */
+    source: text("source").notNull().default("記述"),
+    validFromRev: integer("valid_from_rev"),
+    validToRev: integer("valid_to_rev"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("knowledge_events_work_idx").on(t.workId),
+    index("knowledge_events_entity_idx").on(t.entityId),
+    index("knowledge_events_fact_idx").on(t.factId),
   ],
 );
 

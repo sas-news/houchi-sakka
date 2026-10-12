@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@houchi/contracts": "workspace:*",
+    "@houchi/mentions": "workspace:*",
     "@houchi/validators": "workspace:*",
     "drizzle-orm": "^0.44.5"
   },

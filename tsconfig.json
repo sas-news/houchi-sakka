@@ -6,6 +6,7 @@
     { "path": "packages/providers" },
     { "path": "packages/database" },
     { "path": "packages/harness" },
+    { "path": "packages/mentions" },
     { "path": "packages/prompts" },
     { "path": "packages/skills" },
     { "path": "packages/story-evals" },
