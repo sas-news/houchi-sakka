@@ -43,6 +43,5 @@ DEFAULT_MODEL = "gpt-4o-mini"
 [[d1_databases]]
 binding = "DB"
 database_name = "houchi-sakka"
-# `pnpm exec wrangler d1 create houchi-sakka` で発行された ID に書き換える
-database_id = "REPLACE_WITH_PRODUCTION_DATABASE_ID"
+database_id = "c25b1ace-15dc-45e5-b7de-a44f7b113d78"
 migrations_dir = "../../packages/database/migrations"
