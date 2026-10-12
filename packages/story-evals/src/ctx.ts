@@ -244,6 +244,7 @@ export function makeEvalCtx(args: {
           provenance: req.provenance,
           valid_from_rev: null,
           valid_to_rev: null,
+          fact_ref: null,
           created_at: world.canon_facts.length,
         });
         added += 1;
@@ -266,7 +267,7 @@ export function makeEvalCtx(args: {
         description: req.description ?? "",
         ops: req.ops as ChangeSetWithFindings["ops"],
         status: "proposed",
-        impact: { scenes: [], facts: [], contracts: [], summary: "" },
+        impact: { scenes: [], facts: [], contracts: [], entities: [], summary: "" },
         force: 0,
         force_reason: null,
         base_rev: null,

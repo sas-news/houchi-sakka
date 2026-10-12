@@ -143,12 +143,51 @@ export interface CanonFactInfo {
   id: string;
   work_id: string;
   statement: string;
+  /** 安定ID (リビジョンをまたぐ正典の識別子, spec §6.3)。 */
+  fact_ref?: string | null;
   /** コミットメント状態 (spec §4.3)。 */
   commitment: "fixed" | "committed" | "provisional" | "open_by_design" | "undecided";
   /** 開示ポリシー (spec §4.3)。 */
   disclosure: "normal" | "secret";
   provenance: string;
   created_at: number;
+}
+
+/** 登場要素の種別 (spec §6.4)。 */
+export type EntityKind = "character" | "place" | "org" | "item" | "concept";
+
+export interface KnowledgeEventInfo {
+  id: string;
+  work_id: string;
+  /** 知った人物の entity_id。 */
+  entity_id: string;
+  /** 知った事実の fact_ref。 */
+  fact_id: string;
+  /** どこで知ったか (シーン)。 */
+  scene_id: string | null;
+  /** 情報源 (目撃/伝聞/推論/記述)。 */
+  source: string;
+  valid_from_rev: number;
+  valid_to_rev: number | null;
+  created_at: number;
+  /** UI 表示用に付けた正典文 (API 側で解決)。 */
+  fact_statement?: string | null;
+  scene_title?: string | null;
+}
+
+/** 資料タブ「登場要素」の1件 (読み取り専用)。 */
+export interface WorkEntityInfo {
+  id: string;
+  /** リビジョンをまたぐ登場要素の安定ID。 */
+  entity_id: string;
+  kind: EntityKind;
+  name: string;
+  summary: string;
+  aliases: string[];
+  /** 紐付く現行正典。 */
+  facts: CanonFactInfo[];
+  /** この人物が知っていること。 */
+  knowledge_events: KnowledgeEventInfo[];
 }
 
 export interface ChangeSetOp {
@@ -158,25 +197,45 @@ export interface ChangeSetOp {
     | "add_fact"
     | "set_fact_commitment"
     | "update_work"
-    | "rewrite_scene";
+    | "rewrite_scene"
+    | "add_entity"
+    | "update_entity"
+    | "retire_entity"
+    | "add_knowledge_event"
+    | "retract_knowledge_event";
   fact_id?: string;
   new_statement?: string;
   statement?: string;
   /** 正典の確度・開示 (add_fact/revise_fact/set_fact_commitment)。 */
   commitment?: CanonFactInfo["commitment"];
   disclosure?: CanonFactInfo["disclosure"];
+  /** 正典に紐付ける登場要素 (add_fact/revise_fact)。 */
+  entity_refs?: string[];
   patch?: Partial<
     Pick<WorkInfo, "title" | "premise" | "genre" | "charter" | "policy">
   >;
   /** rewrite_scene: 対象シーンと書き換え後の本文。 */
   scene_id?: string;
   text?: string;
+  /** entity ops: 登場要素の追加/更新/廃止。 */
+  entity_id?: string;
+  kind?: EntityKind;
+  name?: string;
+  summary?: string;
+  aliases?: string[];
+  add_aliases?: string[];
+  remove_aliases?: string[];
+  /** knowledge ops: 知識イベントの記録/取消。 */
+  event_id?: string;
+  source?: string;
 }
 
 export interface ChangeSetImpact {
   scenes: { id: string; title: string; reason: string }[];
   facts: { id: string; statement: string; reason: string }[];
   contracts: { id: string; scene_id: string; reason: string }[];
+  /** 影響する登場要素 (spec §6.4 の entity 経路)。 */
+  entities?: { id: string; name: string; reason: string }[];
   summary: string;
 }
 

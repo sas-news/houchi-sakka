@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@houchi/contracts": "workspace:*",
+    "@houchi/mentions": "workspace:*",
     "@houchi/prompts": "workspace:*",
     "@houchi/providers": "workspace:*",
     "@houchi/skills": "workspace:*",

@@ -38,8 +38,10 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 
 変更の提案 (CHANGESET):
 - 変更セットは作者の承認後にだけ適用される。影響しそうなシーン・契約は影響分析で示されるので、提案文には「何をなぜ変えるか」を書く。
-- ops の語彙: {"op": "retire_fact", "fact_id": "…"} (正典を廃止) / {"op": "revise_fact", "fact_id": "…", "new_statement": "…", "commitment"?: "…", "disclosure"?: "…"} (正典を書き換え) / {"op": "add_fact", "statement": "…", "commitment"?: "…", "disclosure"?: "…"} (正典を追加) / {"op": "set_fact_commitment", "fact_id": "…", "commitment": "…", "disclosure"?: "…"} (確度や秘密区分だけを変更) / {"op": "update_work", "patch": {"title"?: "…", "premise"?: "…", "genre"?: "…", "charter"?: {…}, "policy"?: {…}}} (作品の構造情報を変更)。
-- fact_id は「記録済みの正典メモ」に [fact_id: …] で示されるものを使う。
+- ops の語彙: {"op": "retire_fact", "fact_id": "…"} (正典を廃止) / {"op": "revise_fact", "fact_id": "…", "new_statement": "…", "commitment"?: "…", "disclosure"?: "…", "entity_refs"?: ["entity_id"]} (正典を書き換え) / {"op": "add_fact", "statement": "…", "commitment"?: "…", "disclosure"?: "…", "entity_refs"?: ["entity_id"]} (正典を追加。entity_refs で関連する登場要素を紐付けられる) / {"op": "set_fact_commitment", "fact_id": "…", "commitment": "…", "disclosure"?: "…"} (確度や秘密区分だけを変更) / {"op": "update_work", "patch": {"title"?: "…", "premise"?: "…", "genre"?: "…", "charter"?: {…}, "policy"?: {…}}} (作品の構造情報を変更)。
+- 登場要素の ops: {"op": "add_entity", "kind": "character|place|org|item|concept", "name": "…", "summary"?: "…", "aliases"?: ["別名"]} (人物・場所・組織・物品・概念の追加) / {"op": "update_entity", "entity_id": "…", "name"?: "…", "summary"?: "…", "add_aliases"?: ["…"], "remove_aliases"?: ["…"]} (更新・別名の追加削除) / {"op": "retire_entity", "entity_id": "…"} (廃止)。「〜という人物/場所/組織を追加して」は add_entity で提案する。
+- 知識の ops: {"op": "add_knowledge_event", "entity_id": "知った人物", "fact_id": "正典の fact_id", "scene_id"?: "…", "source"?: "目撃|伝聞|推論|記述"} (誰が何を知ったかを記録) / {"op": "retract_knowledge_event", "event_id": "…"} (取消)。視点人物が秘密を知っている場合は必ずこれで記録する。
+- fact_id は「記録済みの正典メモ」に [fact_id: …]、entity_id は「登場要素」に [entity_id: …] で示されるものを使う。
 
 本文生成の提案 (PROPOSE):
 - 作者が本文を書きたい意思を示し、かつシーンの目的・視点・必須イベントなどの契約要素が対話で揃ったときだけ、PROPOSE 行で「話+シーン+Writing Contract」の提案を出す。契約要素が足りない場合は提案せず、不足分を質問して固める。
@@ -58,7 +60,7 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 <<CANON_FACTS ["確定した設定や決定事項", {"statement": "仮置きの案", "commitment": "provisional"}, {"statement": "秘密の事実", "disclosure": "secret"}]>>
 <<PROPOSE {"episode_title": "第1話", "scene_title": "…", "scene_purpose": "…", "contract": {"role": "…", "pov": "…", "required_events": ["…"], "forbidden": ["…"], "knowledge_notes": "…", "connections": "…"}}>>
 <<RUN_PLAN {"guidance": "…"}>>
-<<CHANGESET {"title": "…", "description": "…", "ops": [{"op": "revise_fact", "fact_id": "…", "new_statement": "…"}]}>>
+<<CHANGESET {"title": "…", "description": "…", "ops": [{"op": "revise_fact", "fact_id": "…", "new_statement": "…"}, {"op": "add_entity", "kind": "character", "name": "…", "aliases": ["…"]}]}>>
 - WORK_PATCH: 更新しないフィールドは省略。更新がなければ行自体を出さない。status には "setup" または "active" だけが使える。
 - CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。仮置き・未定の事項は commitment="provisional"、秘密事項は disclosure="secret" を付ける。
 - PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。
@@ -106,6 +108,14 @@ export function buildOrchestratorInput(input: {
     commitment?: string | undefined;
     disclosure?: string | undefined;
   }[];
+  /** 登場要素一覧 (entity_id+別名。entity ops の参照に使う)。 */
+  entities?: {
+    entity_id: string;
+    kind: string;
+    name: string;
+    aliases?: string[];
+    summary?: string;
+  }[];
   pendingProposals?: string[];
   /** workspace のファイル一覧 (一覧+要約のみ。中身は載せない)。 */
   workspaceFiles?: { path: string; summary: string }[];
@@ -128,6 +138,15 @@ export function buildOrchestratorInput(input: {
       "記録済みの正典メモ:",
       ...input.canonFacts.map(
         (f) => `- [fact_id: ${f.id}] ${canonFactLabel(f)}${f.statement}`,
+      ),
+    );
+  }
+  if (input.entities && input.entities.length > 0) {
+    lines.push(
+      "登場要素 (entity ops が参照する):",
+      ...input.entities.map(
+        (e) =>
+          `- [entity_id: ${e.entity_id}] ${e.name} (${e.kind})${e.aliases && e.aliases.length > 0 ? ` 別名:${e.aliases.join("/")}` : ""}${e.summary ? ` — ${e.summary}` : ""}`,
       ),
     );
   }

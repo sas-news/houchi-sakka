@@ -217,3 +217,57 @@ describe("spec 4.3: facts.md の確度グループ化", () => {
     ]);
   });
 });
+
+describe("/entities/<kind>.md (spec §6.4)", () => {
+  it("登場要素があると一覧に kind ごとのファイルが出て本文を読める", async () => {
+    const { db, work } = await setupWork();
+    // 対話経由でエンティティを登録するのと同じ変更セット適用。
+    const { applyChangeSet, computeChangeSetImpact, createChangeSet } =
+      await import("@houchi/database");
+    const ops = [
+      {
+        op: "add_entity" as const,
+        kind: "character" as const,
+        name: "アキラ",
+        summary: "主人公",
+        aliases: ["暁"],
+      },
+      {
+        op: "add_entity" as const,
+        kind: "place" as const,
+        name: "白鷺高校",
+        summary: "",
+        aliases: [],
+      },
+    ];
+    const impact = await computeChangeSetImpact(db, {
+      workId: work.id,
+      ops: [...ops],
+    });
+    const cs = await createChangeSet(db, {
+      workId: work.id,
+      title: "登場要素追加",
+      ops: [...ops],
+      impact,
+    });
+    await applyChangeSet(db, { changeSetId: cs.id });
+
+    const paths = (await listFiles(db, work)).map((f) => f.path);
+    expect(paths).toContain("/entities/character.md");
+    expect(paths).toContain("/entities/place.md");
+
+    const f = await readFile(db, work, "/entities/character.md");
+    expect(f).not.toBeNull();
+    expect(f!.content).toContain("# 人物");
+    expect(f!.content).toContain("## アキラ");
+    expect(f!.content).toContain("別名: 暁");
+    expect(f!.content).toContain("要約: 主人公");
+
+    // 未定義 kind は空リスト文、未知パターンは null
+    expect(
+      (await readFile(db, work, "/entities/org.md"))!.content,
+    ).toContain("(組織の登場要素はまだありません)");
+    expect(await readFile(db, work, "/entities/nope.md")).toBeNull();
+    expect(await readFile(db, work, "/entities/character.txt")).toBeNull();
+  });
+});

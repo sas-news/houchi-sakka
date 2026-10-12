@@ -91,9 +91,13 @@ import {
   listCanonFactsByWork,
   listChangeSetsByWork,
   listContractsByWork,
+  listEntitiesWithAliasesByWork,
   listEpisodesByWork,
+  listFactRefsByEntityIds,
   listKeyUsageCounts,
   listKeysByOwner,
+  listKnowledgeEventsByEntity,
+  listKnowledgeEventsByWork,
   listMessages,
   listOpenJobsByWork,
   listProgress,
@@ -739,6 +743,58 @@ export function createApp(deps: WebDeps): FetchHandler {
           const file = await readWorkspaceFile(db, work, filePath);
           if (!file) return err(404, "not_found", "ファイルが見つかりません");
           return json(file);
+        }
+
+        // GET /api/works/:id/entities — 資料タブ「登場要素」の一覧+詳細
+        // (名前・別名・要約・紐付く正典・知識イベント。読み取り専用: 構造化
+        // 情報の CRUD は対話経由のみ, spec P1)。
+        const entitiesPath = pathname.match(
+          /^\/api\/works\/([^/]+)\/entities$/,
+        );
+        if (method === "GET" && entitiesPath) {
+          const work = await getWorkById(db, entitiesPath[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const entities = await listEntitiesWithAliasesByWork(db, work.id);
+          const facts = await listCanonFactsByWork(db, work.id);
+          const factByRef = new Map(
+            facts.map((f) => [f.fact_ref ?? f.id, f]),
+          );
+          const linkMap = await listFactRefsByEntityIds(
+            db,
+            entities.map((e) => e.entity_id),
+          );
+          const scenes = await listScenesByWork(db, work.id);
+          const sceneTitle = new Map(scenes.map((s) => [s.id, s.title]));
+          const detailed = [];
+          for (const e of entities) {
+            const linked = (linkMap.get(e.entity_id) ?? [])
+              .map((ref) => factByRef.get(ref))
+              .filter((f) => f !== undefined);
+            const events = await listKnowledgeEventsByEntity(
+              db,
+              e.entity_id,
+            );
+            detailed.push({
+              id: e.id,
+              entity_id: e.entity_id,
+              kind: e.kind,
+              name: e.name,
+              summary: e.summary,
+              aliases: e.aliases,
+              facts: linked,
+              knowledge_events: events.map((ev) => ({
+                ...ev,
+                fact_statement:
+                  factByRef.get(ev.fact_id)?.statement ?? null,
+                scene_title: ev.scene_id
+                  ? (sceneTitle.get(ev.scene_id) ?? null)
+                  : null,
+              })),
+            });
+          }
+          return json({ entities: detailed });
         }
 
         // PATCH /api/works/:id/settings — provider/model/key の選択
@@ -1520,6 +1576,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (!work) return err(404, "not_found", "作品が見つかりません");
         const messages = await listMessages(db, thread.id);
         const canonFacts = await listCanonFactsByWork(db, work.id);
+        const entities = await listEntitiesWithAliasesByWork(db, work.id);
         const proposals = await listProposalsByWork(db, work.id);
         // workspace のファイル一覧+計画ツリー (orchestrator/planner の材料)
         const workspaceFiles = await listWorkspaceFiles(db, work);
@@ -1529,6 +1586,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           thread,
           messages,
           canon_facts: canonFacts,
+          entities,
           proposals,
           workspace_files: workspaceFiles,
           plan_tree: planTree,
@@ -1684,12 +1742,16 @@ export function createApp(deps: WebDeps): FetchHandler {
               : "",
           });
         }
+        const entities = await listEntitiesWithAliasesByWork(db, work.id);
+        const knowledgeEvents = await listKnowledgeEventsByWork(db, work.id);
         return json({
           scene,
           contract,
           work,
           canon_facts: canonFacts,
           prev_scenes: prevScenes,
+          entities,
+          knowledge_events: knowledgeEvents,
         });
       }
 

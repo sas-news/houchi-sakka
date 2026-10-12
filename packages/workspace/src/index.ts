@@ -15,11 +15,14 @@
 // ---------------------------------------------------------------------------
 
 import {
+  ENTITY_KINDS,
+  ENTITY_KIND_LABELS,
   PROPOSAL_KIND_WORKSPACE_WRITE,
   tiptapDocToText,
   type CanonFactInput,
   type CommitmentLevel,
   type DisclosurePolicy,
+  type EntityKind,
   type Proposal,
   type Scene,
   type Work,
@@ -34,7 +37,10 @@ import {
   getThreadByWorkId,
   listAllCanonFactsByWork,
   listCanonFactsByWork,
+  listEntitiesWithAliasesByWork,
   listEpisodesByWork,
+  listFactRefsByEntityIds,
+  listKnowledgeEventsByEntity,
   listRevisionsByScene,
   listScenesByEpisode,
   type DbLike,
@@ -44,9 +50,12 @@ export const PATH_WORK_JSON = "/work.json" as const;
 export const PATH_CANON_FACTS = "/canon/facts.md" as const;
 export const PATH_CANON_HISTORY = "/canon/history.md" as const;
 export const PATH_PLAN_TREE = "/plan/tree.md" as const;
+/** 登場要素の一覧 (kind ごとに1ファイル。spec §6.4)。 */
+export const PATH_ENTITIES_PREFIX = "/entities/" as const;
 
 const CONTRACT_PATH_RE = /^\/contracts\/(.+)\.json$/;
 const SCENE_PATH_RE = /^\/scenes\/(\d+)-(\d+)\.md$/;
+const ENTITY_PATH_RE = /^\/entities\/([a-z]+)\.md$/;
 
 /** writePropose が apply 対応するパス (現状は正典メモ追記のみ)。 */
 export const WRITABLE_PATHS = [PATH_CANON_FACTS] as const;
@@ -156,6 +165,57 @@ export async function buildCanonHistoryMd(
     .join("\n");
 }
 
+/**
+ * /entities/<kind>.md の内容を生成する (spec §6.4)。
+ * その kind の現行エンティティを、別名・要約・紐付く正典・知識イベントつきで
+ * 列挙する。エージェントの読み取り対象 (書き込みは変更セット経由)。
+ */
+export async function buildEntitiesMd(
+  db: DbLike,
+  workId: string,
+  kind: EntityKind,
+): Promise<string> {
+  const entities = (await listEntitiesWithAliasesByWork(db, workId)).filter(
+    (e) => e.kind === kind,
+  );
+  if (entities.length === 0) {
+    return `(${ENTITY_KIND_LABELS[kind]}の登場要素はまだありません)`;
+  }
+  const linkMap = await listFactRefsByEntityIds(
+    db,
+    entities.map((e) => e.entity_id),
+  );
+  const facts = await listCanonFactsByWork(db, workId);
+  const factByRef = new Map(facts.map((f) => [f.fact_ref ?? f.id, f]));
+  const blocks: string[] = [];
+  for (const e of entities) {
+    const lines: string[] = [`## ${e.name}`];
+    if (e.aliases.length > 0) lines.push(`別名: ${e.aliases.join(" / ")}`);
+    if (e.summary) lines.push(`要約: ${e.summary}`);
+    const linked = (linkMap.get(e.entity_id) ?? [])
+      .map((ref) => factByRef.get(ref))
+      .filter((f) => f !== undefined);
+    if (linked.length > 0) {
+      lines.push("紐付く正典:");
+      for (const f of linked) {
+        lines.push(`- ${f.disclosure === "secret" ? "[秘密] " : ""}${f.statement}`);
+      }
+    }
+    const events = await listKnowledgeEventsByEntity(db, e.entity_id);
+    if (events.length > 0) {
+      lines.push("知っていること:");
+      for (const ev of events) {
+        const fact = factByRef.get(ev.fact_id);
+        lines.push(
+          `- ${fact?.statement ?? ev.fact_id} (${ev.source}${ev.scene_id ? ", シーン:" + ev.scene_id : ""})`,
+        );
+      }
+    }
+    blocks.push(lines.join("\n"));
+  }
+  return `# ${ENTITY_KIND_LABELS[kind]}\n\n${blocks.join("\n\n")}`;
+}
+
 /** /work.json の内容を生成する。 */
 export function buildWorkJson(work: Work): string {
   return JSON.stringify(
@@ -180,6 +240,7 @@ export async function listFiles(
 ): Promise<WorkspaceFile[]> {
   const facts = await listCanonFactsByWork(db, work.id);
   const items = await loadScenesWithEpisode(db, work.id);
+  const entities = await listEntitiesWithAliasesByWork(db, work.id);
 
   const files: WorkspaceFile[] = [
     {
@@ -199,6 +260,14 @@ export async function listFiles(
       summary: `計画ツリー (シーン ${items.length}件)`,
     },
   ];
+  for (const kind of ENTITY_KINDS) {
+    const count = entities.filter((e) => e.kind === kind).length;
+    if (count === 0) continue;
+    files.push({
+      path: `${PATH_ENTITIES_PREFIX}${kind}.md`,
+      summary: `登場要素 (${ENTITY_KIND_LABELS[kind]}) ${count}件`,
+    });
+  }
   for (const { scene, episodeTitle, episodeOrd } of items) {
     const contract = await getLatestContractByScene(db, scene.id);
     if (contract) {
@@ -256,6 +325,12 @@ export async function readFile(
         2,
       ),
     };
+  }
+  const entityMatch = path.match(ENTITY_PATH_RE);
+  if (entityMatch) {
+    const kind = entityMatch[1] as EntityKind;
+    if (!(ENTITY_KINDS as readonly string[]).includes(kind)) return null;
+    return { path, content: await buildEntitiesMd(db, work.id, kind) };
   }
   const sceneMatch = path.match(SCENE_PATH_RE);
   if (sceneMatch) {

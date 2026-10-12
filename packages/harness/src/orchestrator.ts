@@ -45,6 +45,13 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
     const input = buildOrchestratorInput({
       work: threadCtx.work,
       messages: threadCtx.messages,
+      entities: (threadCtx.entities ?? []).map((e) => ({
+        entity_id: e.entity_id,
+        kind: e.kind,
+        name: e.name,
+        aliases: e.aliases,
+        summary: e.summary,
+      })),
       canonFacts: threadCtx.canon_facts.map((f) => ({
         id: f.id,
         statement: f.statement,

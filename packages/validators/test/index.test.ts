@@ -132,6 +132,40 @@ describe("checkKnowledgeLeak", () => {
     ]);
     expect(none.findings).toHaveLength(0);
   });
+
+  it("knownFactIds (KnowledgeEvent) にある秘密は開示対象外 (spec §6.4 MVP)", () => {
+    const secretFacts = [
+      {
+        id: "row-1",
+        fact_ref: "fact-ref-1",
+        statement: "黒猫の正体は駅の精霊である",
+        provenance: "orchestrator",
+        disclosure: "secret" as const,
+      },
+    ];
+    const prose = "その時わかった。黒猫の正体は駅の精霊である、と。";
+    // 知識イベントなし → 違反
+    expect(
+      checkKnowledgeLeak(prose, secretFacts).findings.some(
+        (f) => f.rule === "canon.secret_leak",
+      ),
+    ).toBe(true);
+    // 視点人物がこの事実を知っている → 違反にならない
+    const known = new Set(["fact-ref-1"]);
+    expect(
+      checkKnowledgeLeak(prose, secretFacts, known).findings,
+    ).toHaveLength(0);
+    // 行 id でも引ける (fact_ref 未設定の行フォールバック)
+    const noRef = [{ ...secretFacts[0]!, id: "row-9", fact_ref: null }];
+    expect(
+      checkKnowledgeLeak(prose, noRef, new Set(["row-9"])).findings,
+    ).toHaveLength(0);
+    // 別の事実を知っているだけでは違反のまま
+    expect(
+      checkKnowledgeLeak(prose, secretFacts, new Set(["other"])).findings
+        .length,
+    ).toBeGreaterThan(0);
+  });
 });
 
 describe("validateProse / toCriticOutput / countFindings", () => {

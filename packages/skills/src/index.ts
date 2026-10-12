@@ -146,6 +146,12 @@ export type WriterInput = {
   critique?: CriticOutput;
   /** 作者からの書き直し指示 (再生成ジョブ)。 */
   instruction?: string;
+  /**
+   * 視点人物が知っていること (spec §6.4 MVP):
+   * knowledge_events (entity=POV人物, fact 有効) + contract.pov_knowledge 宣言。
+   * 秘密の正典を本文に出してよいのはこの範囲に限る。
+   */
+  pov_knowledge?: string[];
 };
 
 export const WriterOutputSchema = z.object({
@@ -172,6 +178,10 @@ export const writerSkill: SkillDefinition<WriterInput, WriterOutput> = {
       `記憶ノート: ${input.contract.knowledge_notes || "(なし)"}`,
       `接続: ${input.contract.connections || "(なし)"}`,
     ].join("\n");
+    const povKnowledgeLines =
+      input.pov_knowledge && input.pov_knowledge.length > 0
+        ? `\n視点人物が知っていること (秘密も本文に出せる):\n${input.pov_knowledge.map((s) => `- ${s}`).join("\n")}`
+        : "\n視点人物が知っていること: (宣言なし — 秘密の正典は本文に出さない)";
 
     const critiqueBlock = input.critique
       ? [
@@ -195,6 +205,7 @@ export const writerSkill: SkillDefinition<WriterInput, WriterOutput> = {
           "正典メモの先頭ラベル: [約束済み]=近い将来の計画として約束済み。",
           "[仮置き]/[未判断]/[意図的未確定]=未確定なので、本文の確定事項として使ってはいけません。",
           "[秘密]=読者にも未登場人物にも知られたくない事実なので、本文には絶対に書かないでください。",
+          "ただし「視点人物が知っていること」に挙がっている事実は、その視点の叙述として出して構いません。",
           input.critique
             ? "検査で指摘された問題をすべて解消した版を書いてください。"
             : "",
@@ -214,7 +225,7 @@ export const writerSkill: SkillDefinition<WriterInput, WriterOutput> = {
           `目的: ${input.scene_purpose}`,
           "",
           "【Writing Contract】",
-          contractLines,
+          contractLines + povKnowledgeLines,
           "",
           "【正典メモ】",
           input.canon_facts.length > 0
@@ -244,6 +255,11 @@ export type CriticInput = {
   /** 検査対象の本文。 */
   prose_md: string;
   canon_facts: CanonFactPromptItem[];
+  /**
+   * 視点人物が知っていること (spec §6.4 MVP)。この範囲の事実が
+   * 本文に出ても早期開示とはみなさない。
+   */
+  pov_knowledge?: string[];
 };
 
 export const CriticOutputSchema = z.object({
@@ -299,6 +315,13 @@ export const criticSkill: SkillDefinition<CriticInput, CriticOutput> = {
           `必須イベント: ${input.contract.required_events.join("、") || "(なし)"}`,
           `禁止事項: ${input.contract.forbidden.join("、") || "(なし)"}`,
           `記憶ノート: ${input.contract.knowledge_notes || "(なし)"}`,
+          ...(input.pov_knowledge && input.pov_knowledge.length > 0
+            ? [
+                "",
+                "【視点人物が知っていること (これらの開示は許可)】",
+                ...input.pov_knowledge.map((s) => `- ${s}`),
+              ]
+            : []),
           "",
           "【正典メモ】",
           input.canon_facts.length > 0

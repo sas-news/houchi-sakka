@@ -688,9 +688,116 @@ export const CanonFactSchema = z.object({
   valid_from_rev: z.number().int().nullable(),
   /** 閉じられた正典リビジョン (null=現行)。 */
   valid_to_rev: z.number().int().nullable(),
+  /**
+   * リビジョン跨ぎの安定ID (spec §6.4)。改定で新行になっても引き継がれる。
+   * 0009 適用前の行やリファレンス未整備の経路では null になりうるので
+   * 省略時は id と同じ扱いにする。
+   */
+  fact_ref: z.string().nullish(),
   created_at: z.number(),
 });
 export type CanonFact = z.infer<typeof CanonFactSchema>;
+
+// ---------------------------------------------------------------------------
+// StoryEntity / EntityAlias / KnowledgeEvent (spec §6.4, 知識追跡 MVP)
+// ---------------------------------------------------------------------------
+
+/** 登場要素の種別 (spec §6.4)。 */
+export const ENTITY_KINDS = [
+  "character",
+  "place",
+  "org",
+  "item",
+  "concept",
+] as const;
+export const EntityKindSchema = z.enum(ENTITY_KINDS);
+export type EntityKind = z.infer<typeof EntityKindSchema>;
+
+/** 種別の日本語ラベル (UI・プロンプト・workspace で共通)。 */
+export const ENTITY_KIND_LABELS: Record<EntityKind, string> = {
+  character: "人物",
+  place: "場所",
+  org: "組織",
+  item: "物品",
+  concept: "概念",
+};
+
+/**
+ * 登場要素 (spec §6.4 StoryEntity)。時系列モデル:
+ * id はリビジョン行のPK、entity_id はリビジョンを跨ぐ安定ID
+ * (aliases/fact_entities/knowledge_events は entity_id を指す)。
+ */
+export const StoryEntitySchema = z.object({
+  id: z.string(),
+  entity_id: z.string(),
+  work_id: z.string(),
+  kind: EntityKindSchema,
+  name: z.string(),
+  summary: z.string().default(""),
+  valid_from_rev: z.number().int().nullable(),
+  valid_to_rev: z.number().int().nullable(),
+  created_at: z.number(),
+});
+export type StoryEntity = z.infer<typeof StoryEntitySchema>;
+
+/** 別名・表記揺れ・愛称 (entity_id 安定ID参照)。 */
+export const EntityAliasSchema = z.object({
+  id: z.string(),
+  entity_id: z.string(),
+  alias: z.string(),
+  created_at: z.number(),
+});
+export type EntityAlias = z.infer<typeof EntityAliasSchema>;
+
+/** 言及検出・コンテキスト渡し用のエンティティ+別名セット。 */
+export const EntityWithAliasesSchema = StoryEntitySchema.extend({
+  aliases: z.array(z.string()).default([]),
+});
+export type EntityWithAliases = z.infer<typeof EntityWithAliasesSchema>;
+
+/**
+ * 誰が何を・どこから知ったか (spec §6.4 KnowledgeEvent)。
+ * entity_id=知った人物 (安定ID)、fact_id=canon_facts.fact_ref (安定ID)。
+ */
+export const KnowledgeEventSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  entity_id: z.string(),
+  /** fact_ref (安定ID)。改定後も同じ事実を指す。 */
+  fact_id: z.string(),
+  scene_id: z.string().nullable(),
+  /** 情報源 (目撃/伝聞/推論/記述 など)。 */
+  source: z.string(),
+  valid_from_rev: z.number().int().nullable(),
+  valid_to_rev: z.number().int().nullable(),
+  created_at: z.number(),
+});
+export type KnowledgeEvent = z.infer<typeof KnowledgeEventSchema>;
+
+/** GET /api/works/:id/entities — 資料タブ「登場要素」一覧+詳細 (読み取り専用)。 */
+export const WorkEntityDetailSchema = z.object({
+  id: z.string(),
+  entity_id: z.string(),
+  kind: EntityKindSchema,
+  name: z.string(),
+  summary: z.string(),
+  aliases: z.array(z.string()),
+  /** 紐付く現行の正典メモ (fact_entities 経由)。 */
+  facts: z.array(CanonFactSchema),
+  /** この人物が知った知識イベント (現行のみ。fact文面とシーン名つき)。 */
+  knowledge_events: z.array(
+    KnowledgeEventSchema.extend({
+      fact_statement: z.string(),
+      scene_title: z.string().nullable(),
+    }),
+  ),
+});
+export type WorkEntityDetail = z.infer<typeof WorkEntityDetailSchema>;
+
+export const WorkEntitiesResponseSchema = z.object({
+  entities: z.array(WorkEntityDetailSchema),
+});
+export type WorkEntitiesResponse = z.infer<typeof WorkEntitiesResponseSchema>;
 
 /** チャット内承認カードの種別。 */
 export const PROPOSAL_KIND_WRITING_CONTRACT = "writing_contract" as const;
@@ -953,6 +1060,8 @@ export const ThreadContextResponseSchema = z.object({
   workspace_files: z.array(WorkspaceFileSchema),
   /** /plan/tree.md の内容 (planner の入力にも使う)。 */
   plan_tree: z.string(),
+  /** 登場要素一覧 (現行行+別名。entity ops の参照と POV 解決に使う)。 */
+  entities: z.array(EntityWithAliasesSchema).default([]),
 });
 export type ThreadContextResponse = z.infer<typeof ThreadContextResponseSchema>;
 
@@ -1013,6 +1122,10 @@ export const SceneContextResponseSchema = z.object({
       excerpt: z.string(),
     }),
   ),
+  /** 登場要素一覧 (言及検出と POV 知識解決に使う。現行行+別名)。 */
+  entities: z.array(EntityWithAliasesSchema).default([]),
+  /** 現行の知識イベント (誰が何を知ったか。POV 知識の解決に使う)。 */
+  knowledge_events: z.array(KnowledgeEventSchema).default([]),
 });
 export type SceneContextResponse = z.infer<typeof SceneContextResponseSchema>;
 
@@ -1204,12 +1317,16 @@ export const ChangeSetOpSchema = z.discriminatedUnion("op", [
     /** 省略時は旧行の値を引き継ぐ (commitment/disclosure もリビジョンの一部)。 */
     commitment: CommitmentLevelSchema.optional(),
     disclosure: DisclosurePolicySchema.optional(),
+    /** 関連エンティティの entity_id (安定ID)。省略時は旧行のリンクを引き継ぐ。 */
+    entity_refs: z.array(z.string().min(1)).max(50).optional(),
   }),
   z.object({
     op: z.literal("add_fact"),
     statement: z.string().min(1).max(20000),
     commitment: CommitmentLevelSchema.optional(),
     disclosure: DisclosurePolicySchema.optional(),
+    /** 関連エンティティの entity_id (安定ID)。 */
+    entity_refs: z.array(z.string().min(1)).max(50).optional(),
   }),
   /**
    * 正典メモのコミットメント状態だけを変更する (spec §4.3)。
@@ -1230,6 +1347,47 @@ export const ChangeSetOpSchema = z.discriminatedUnion("op", [
     op: z.literal("rewrite_scene"),
     scene_id: z.string().min(1),
     text: z.string().min(1).max(200000),
+  }),
+  /** 登場要素の追加 (spec §6.4)。 */
+  z.object({
+    op: z.literal("add_entity"),
+    kind: EntityKindSchema,
+    name: z.string().min(1).max(200),
+    summary: z.string().max(20000).default(""),
+    /** 別名・表記揺れ・愛称 (省略可)。 */
+    aliases: z.array(z.string().min(1).max(200)).max(50).default([]),
+  }),
+  /** 登場要素の更新 (時系列: 旧行を閉じて新行を挿入)。 */
+  z.object({
+    op: z.literal("update_entity"),
+    /** 安定ID側 (entity_id)。 */
+    entity_id: z.string().min(1),
+    name: z.string().min(1).max(200).optional(),
+    summary: z.string().max(20000).optional(),
+    add_aliases: z.array(z.string().min(1).max(200)).max(50).optional(),
+    remove_aliases: z.array(z.string().min(1).max(200)).max(50).optional(),
+  }),
+  /** 登場要素の廃止 (valid_to_rev 設定。登場しなくなった・設定変更等)。 */
+  z.object({
+    op: z.literal("retire_entity"),
+    entity_id: z.string().min(1),
+  }),
+  /** 知識イベントの記録 (誰が何を・どこから知ったか)。 */
+  z.object({
+    op: z.literal("add_knowledge_event"),
+    /** 知った人物の entity_id (安定ID)。 */
+    entity_id: z.string().min(1),
+    /** 何を知ったか: 正典の id または fact_ref (fact_ref に解決される)。 */
+    fact_id: z.string().min(1),
+    /** どこで知ったか (scenes.id。任意)。 */
+    scene_id: z.string().min(1).optional(),
+    /** 情報源 (目撃/伝聞/推論/記述 など)。 */
+    source: z.string().min(1).max(200).default("記述"),
+  }),
+  /** 知識イベントの取消 (valid_to_rev 設定)。 */
+  z.object({
+    op: z.literal("retract_knowledge_event"),
+    event_id: z.string().min(1),
   }),
 ]);
 export type ChangeSetOp = z.infer<typeof ChangeSetOpSchema>;
@@ -1257,6 +1415,16 @@ export const ChangeSetImpactSchema = z.object({
       reason: z.string().default(""),
     }),
   ),
+  /** 影響を受ける登場要素 (entity ops の対象 + fact 経路で繋がる要素)。 */
+  entities: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        reason: z.string().default(""),
+      }),
+    )
+    .default([]),
   /** 人間向けサマリー文 (例: "シーン2件・正典1件・契約2件に影響する可能性")。 */
   summary: z.string().default(""),
 });

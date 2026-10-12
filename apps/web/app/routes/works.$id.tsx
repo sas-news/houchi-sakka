@@ -30,6 +30,7 @@ import type {
   WorkProse,
   WorkReleases,
   WorkspaceFileInfo,
+  WorkEntityInfo,
 } from "../lib/types";
 
 export const meta: MetaFunction = () => [{ title: "作品 | 放置作家" }];
@@ -102,6 +103,20 @@ const OP_LABEL: Record<ChangeSetOp["op"], string> = {
   set_fact_commitment: "正典の確度変更",
   update_work: "作品情報の更新",
   rewrite_scene: "本文の書き換え",
+  add_entity: "登場要素の追加",
+  update_entity: "登場要素の更新",
+  retire_entity: "登場要素の廃止",
+  add_knowledge_event: "知識イベントの記録",
+  retract_knowledge_event: "知識イベントの取消",
+};
+
+/** 登場要素の種別 (spec §6.4) のバッジ表示。 */
+const ENTITY_KIND_LABEL: Record<WorkEntityInfo["kind"], string> = {
+  character: "人物",
+  place: "場所",
+  org: "組織",
+  item: "物品",
+  concept: "概念",
 };
 
 /** コミットメント状態 (spec §4.3) のバッジ表示。 */
@@ -211,6 +226,16 @@ function opText(op: ChangeSetOp): string {
     }
     case "rewrite_scene":
       return `シーンの本文を書き換える (新本文 ${op.text?.length ?? 0}字)`;
+    case "add_entity":
+      return `登場要素に「${op.name ?? ""}」(${ENTITY_KIND_LABEL[op.kind ?? "character"]})を追加する${op.aliases && op.aliases.length > 0 ? ` (別名: ${op.aliases.join("/")})` : ""}`;
+    case "update_entity":
+      return `登場要素を更新する (entity_id: ${op.entity_id ?? ""})`;
+    case "retire_entity":
+      return `登場要素を廃止する (entity_id: ${op.entity_id ?? ""})`;
+    case "add_knowledge_event":
+      return `知識イベントを記録する (誰: ${op.entity_id ?? ""}, 何: ${op.fact_id ?? ""})`;
+    case "retract_knowledge_event":
+      return `知識イベントを取り消す (event_id: ${op.event_id ?? ""})`;
   }
 }
 
@@ -1297,6 +1322,9 @@ export default function WorkPage({
   const [wsPath, setWsPath] = useState<string | null>(null);
   const [wsContent, setWsContent] = useState<string | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
+  // 資料タブのデータ (登場要素, spec §6.4。読み取り専用)
+  const [entities, setEntities] = useState<WorkEntityInfo[] | null>(null);
+  const [entitySel, setEntitySel] = useState<string | null>(null);
   // 公開タブのデータ
   const [releases, setReleases] = useState<WorkReleases | null>(null);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -1341,6 +1369,10 @@ export default function WorkPage({
         .listWorkspaceFiles(workId)
         .then((r) => setWsFiles(r.files))
         .catch(() => setWsFiles([]));
+      api
+        .getEntities(workId)
+        .then((r) => setEntities(r.entities))
+        .catch(() => setEntities([]));
     }
     if (tab === "publish") {
       api
@@ -1857,6 +1889,94 @@ export default function WorkPage({
       {tab === "materials" ? (
         <section>
           {wsError ? <p className="error-text">{wsError}</p> : null}
+          <h3>登場要素</h3>
+          {!entities ? (
+            <p className="muted">読み込み中…</p>
+          ) : entities.length === 0 ? (
+            <p className="muted">
+              まだ登場要素がありません。対話で「アキラという人物を追加して」のように頼むと登録できます。
+            </p>
+          ) : (
+            <>
+              <p className="muted">
+                人物・場所・組織・物品・概念の一覧です (読み取り専用。追加・変更は対話経由)。
+              </p>
+              <div className="scene-list">
+                {entities.map((e) => (
+                  <button
+                    key={e.entity_id}
+                    type="button"
+                    className={`scene-item${entitySel === e.entity_id ? " active" : ""}`}
+                    onClick={() =>
+                      setEntitySel(
+                        entitySel === e.entity_id ? null : e.entity_id,
+                      )
+                    }
+                  >
+                    {e.name}{" "}
+                    <span className="muted">
+                      {ENTITY_KIND_LABEL[e.kind]}
+                      {e.aliases.length > 0
+                        ? `・別名 ${e.aliases.join("/")}`
+                        : ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {entitySel !== null
+                ? (() => {
+                    const e = entities.find(
+                      (x) => x.entity_id === entitySel,
+                    );
+                    if (!e) return null;
+                    return (
+                      <div className="card">
+                        <strong>
+                          {e.name} ({ENTITY_KIND_LABEL[e.kind]})
+                        </strong>
+                        {e.aliases.length > 0 ? (
+                          <p>別名: {e.aliases.join(" / ")}</p>
+                        ) : null}
+                        {e.summary ? <p>{e.summary}</p> : null}
+                        {e.facts.length > 0 ? (
+                          <>
+                            <p className="muted">紐付く正典</p>
+                            <ul>
+                              {e.facts.map((f) => (
+                                <li key={f.id}>
+                                  {f.disclosure === "secret"
+                                    ? "[秘密] "
+                                    : ""}
+                                  {f.statement}
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        ) : null}
+                        {e.knowledge_events.length > 0 ? (
+                          <>
+                            <p className="muted">知っていること</p>
+                            <ul>
+                              {e.knowledge_events.map((ev) => (
+                                <li key={ev.id}>
+                                  {ev.fact_statement ?? ev.fact_id} (
+                                  {ev.source}
+                                  {ev.scene_title
+                                    ? `・${ev.scene_title}`
+                                    : ""}
+                                  )
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        ) : null}
+                      </div>
+                    );
+                  })()
+                : null}
+            </>
+          )}
+          <h3>資料ファイル</h3>
           {!wsFiles ? (
             <p className="muted">読み込み中…</p>
           ) : wsFiles.length === 0 ? (

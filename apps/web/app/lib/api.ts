@@ -12,6 +12,7 @@ import type {
   WorkProse,
   WorkReleases,
   WorkspaceFileInfo,
+  WorkEntityInfo,
 } from "./types";
 
 /** セッション Cookie 前提の小さな fetch ラッパー。 */
@@ -58,6 +59,8 @@ export const api = {
   getProse: (id: string) => call<WorkProse>(`/api/works/${id}/prose`),
   listWorkspaceFiles: (id: string) =>
     call<{ files: WorkspaceFileInfo[] }>(`/api/works/${id}/workspace/files`),
+  getEntities: (id: string) =>
+    call<{ entities: WorkEntityInfo[] }>(`/api/works/${id}/entities`),
   getWorkspaceFile: (id: string, path: string) =>
     call<{ path: string; content: string }>(
       `/api/works/${id}/workspace/file?path=${encodeURIComponent(path)}`,

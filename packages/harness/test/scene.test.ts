@@ -377,4 +377,138 @@ describe("generate_scene 多段パイプライン", () => {
     const result = completed[0] as { resumed_from_checkpoint: boolean };
     expect(result.resumed_from_checkpoint).toBe(true);
   });
+
+  it("本文中のエンティティ言及を kind=mention の依存エッジとして記録する", async () => {
+    const provider = new StubProvider({
+      respond: (req) => {
+        const joined = req.input.map((m) => m.content).join("\n");
+        if (joined.includes("執筆担当")) {
+          return JSON.stringify({
+            prose_md: "アキラはホームに立ち、暁と呼ばれた。",
+            canon_facts_new: [],
+            depends_on: [],
+          });
+        }
+        if (joined.includes("検査担当")) return CLEAN_CRITIC;
+        return "{}";
+      },
+    });
+    const completed: unknown[] = [];
+    const deps: { sceneId: string; edges: DependencyEdgeInput[] }[] = [];
+    const base = sceneCtx(CONTRACT);
+    const ctx = makeCtx({
+      provider,
+      store: { payload: { ...PAYLOAD } },
+      sceneCtx: {
+        ...base,
+        entities: [
+          {
+            id: "row-1",
+            entity_id: "ent-akira",
+            work_id: "w1",
+            kind: "character",
+            name: "アキラ",
+            summary: "",
+            aliases: ["暁"],
+            valid_from_rev: 0,
+            valid_to_rev: null,
+            created_at: 0,
+          },
+        ],
+      },
+      revisions: [],
+      completed,
+      deps,
+    });
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx)).toBe("completed");
+    expect(deps).toHaveLength(1);
+    const mention = deps[0]!.edges.find((e) => e.target_kind === "mention");
+    expect(mention?.target_ref).toBe("ent-akira");
+  });
+
+  it("視点人物の KnowledgeEvent がある秘密は secret_leak 違反にならない", async () => {
+    const provider = new StubProvider({
+      respond: (req) => {
+        const joined = req.input.map((m) => m.content).join("\n");
+        if (joined.includes("執筆担当")) {
+          return JSON.stringify({
+            prose_md: "アキラは知っていた。黒猫の正体は駅の精霊である、と。",
+            canon_facts_new: [],
+            depends_on: [],
+          });
+        }
+        if (joined.includes("検査担当")) return CLEAN_CRITIC;
+        return "{}";
+      },
+    });
+    const secretFact: CanonFact = {
+      id: "f-secret",
+      work_id: "w1",
+      statement: "黒猫の正体は駅の精霊である",
+      commitment: "fixed",
+      disclosure: "secret",
+      provenance: "orchestrator",
+      valid_from_rev: 0,
+      valid_to_rev: null,
+      fact_ref: "ref-secret",
+      created_at: 0,
+    };
+    const povContract: WritingContract = {
+      ...CONTRACT,
+      payload: { ...CONTRACT.payload, pov: "アキラの一人称視点" },
+    };
+    const base = sceneCtx(povContract);
+    const ctx = makeCtx({
+      provider,
+      store: { payload: { ...PAYLOAD } },
+      sceneCtx: {
+        ...base,
+        canon_facts: [secretFact],
+        entities: [
+          {
+            id: "row-1",
+            entity_id: "ent-akira",
+            work_id: "w1",
+            kind: "character",
+            name: "アキラ",
+            summary: "",
+            aliases: [],
+            valid_from_rev: 0,
+            valid_to_rev: null,
+            created_at: 0,
+          },
+        ],
+        knowledge_events: [
+          {
+            id: "ke-1",
+            work_id: "w1",
+            entity_id: "ent-akira",
+            fact_id: "ref-secret",
+            scene_id: null,
+            source: "目撃",
+            valid_from_rev: 0,
+            valid_to_rev: null,
+            created_at: 0,
+          },
+        ],
+      },
+      revisions: [],
+      completed: [] as unknown[],
+    });
+    const completed2: unknown[] = [];
+    const ctx2 = {
+      ...ctx,
+      complete: async (r: unknown) => {
+        completed2.push(r);
+      },
+    };
+    expect(await runJob(makeJob({ ...PAYLOAD }), ctx2)).toBe("completed");
+    const result = completed2[0] as {
+      critique_summary: { high: number };
+      revised: boolean;
+    };
+    // KnowledgeEvent があるので secret_leak は出ない (revise も走らない)
+    expect(result.critique_summary.high).toBe(0);
+    expect(result.revised).toBe(false);
+  });
 });

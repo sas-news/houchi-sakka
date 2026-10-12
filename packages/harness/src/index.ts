@@ -15,6 +15,7 @@ import {
   type ChatRole,
   type ChatThread,
   type DependencyEdgeInput,
+  type EntityWithAliases,
   type ProgressEventType,
   type Proposal,
   type SceneRevision,
@@ -61,6 +62,8 @@ export interface OrchestratorContextData {
   messages: ChatMessage[];
   /** 記録済みの正典メモ (再提案の抑止と契約材料に使う)。 */
   canon_facts: CanonFact[];
+  /** 登場要素+別名 (entity ops の参照先をプロンプトに出す, spec §6.4)。 */
+  entities?: EntityWithAliases[];
   /** 作品の提案一覧 (pending 判定はこちら側で行う)。 */
   proposals: Proposal[];
   /** workspace のファイル一覧 (一覧+要約のみ。Phase 2a)。 */
