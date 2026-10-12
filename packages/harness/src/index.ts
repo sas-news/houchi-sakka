@@ -7,6 +7,7 @@ import {
   SmokeGeneratePayloadSchema,
   type AgentJob,
   type CanonFact,
+  type CanonFactInput,
   type ChangeSetContextResponse,
   type ChangeSetOp,
   type ChangeSetWithFindings,
@@ -113,10 +114,11 @@ export interface JobContext {
     kind: string;
     payload: Record<string, unknown>;
   }): Promise<Proposal>;
-  /** orchestrator_turn: 正典メモを追加する (statement 重複はスキップ)。 */
+  /** orchestrator_turn: 正典メモを追加する (statement 重複はスキップ)。
+   * statements は文字列または {statement, commitment?, disclosure?} (spec §4.3)。 */
   addCanonFacts?(input: {
     work_id: string;
-    statements: string[];
+    statements: CanonFactInput[];
     provenance: string;
   }): Promise<{ added: number }>;
   /**

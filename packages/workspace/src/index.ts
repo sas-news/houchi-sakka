@@ -17,6 +17,9 @@
 import {
   PROPOSAL_KIND_WORKSPACE_WRITE,
   tiptapDocToText,
+  type CanonFactInput,
+  type CommitmentLevel,
+  type DisclosurePolicy,
   type Proposal,
   type Scene,
   type Work,
@@ -94,7 +97,8 @@ export async function buildPlanTree(db: DbLike, workId: string): Promise<string>
 
 /**
  * /canon/facts.md の内容を生成する。
- * 現行行 (valid_to_rev IS NULL) のみ + 末尾に改訂履歴の件数注記 (spec §6.3)。
+ * 現行行 (valid_to_rev IS NULL) をコミットメント状態ごとの見出しで
+ * グループ化して並べる (spec §4.3) + 末尾に改訂履歴の件数注記 (spec §6.3)。
  */
 export async function buildCanonFactsMd(
   db: DbLike,
@@ -108,7 +112,27 @@ export async function buildCanonFactsMd(
       ? `(正典メモはまだありません)\n\n--- (改訂履歴: ${closed}件)`
       : "(正典メモはまだありません)";
   }
-  const body = facts.map((f) => `- ${f.statement}`).join("\n");
+  const order: { level: CommitmentLevel; heading: string }[] = [
+    { level: "fixed", heading: "確定" },
+    { level: "committed", heading: "約束済み" },
+    {
+      level: "provisional",
+      heading: "仮置き (未確定 — 本文の確定事項として使わない)",
+    },
+    { level: "open_by_design", heading: "意図的未確定" },
+    { level: "undecided", heading: "未判断" },
+  ];
+  const parts: string[] = [];
+  for (const { level, heading } of order) {
+    const group = facts.filter((f) => f.commitment === level);
+    if (group.length === 0) continue;
+    const lines = group.map(
+      (f) =>
+        `- ${f.disclosure === "secret" ? "[秘密] " : ""}${f.statement}`,
+    );
+    parts.push(`## ${heading}\n${lines.join("\n")}`);
+  }
+  const body = parts.join("\n\n");
   return closed > 0 ? `${body}\n\n--- (改訂履歴: ${closed}件)` : body;
 }
 
@@ -260,14 +284,84 @@ export async function readFile(
 // 書き込み提案 (常に proposal 化。直接確定しない)
 // ---------------------------------------------------------------------------
 
-/** 箇条書きコンテンツから正典メモの宣言文を抽出する。 */
-export function parseCanonStatements(content: string): string[] {
-  return content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => line.replace(/^(?:[-*・]|\d+[.)])\s*/, "").trim())
-    .filter((line) => line.length > 0);
+/**
+ * facts.md の行頭ラベル → commitment/disclosure の対応表 (spec §4.3)。
+ * 日本語ラベルのほか、従来の [SECRET] マークも disclosure=secret として読む。
+ */
+const CANON_LABEL_TAGS: Record<
+  string,
+  { commitment?: CommitmentLevel; disclosure?: DisclosurePolicy }
+> = {
+  確定: { commitment: "fixed" },
+  約束済み: { commitment: "committed" },
+  仮置き: { commitment: "provisional" },
+  意図的未確定: { commitment: "open_by_design" },
+  未判断: { commitment: "undecided" },
+  未確定: { commitment: "provisional" },
+  秘密: { disclosure: "secret" },
+  secret: { disclosure: "secret" },
+};
+
+/**
+ * 箇条書きコンテンツから正典メモの追加入力を抽出する。
+ * - 箇条書き行のみを拾う (「--- (改訂履歴: …)」の区切り行は捨てる)
+ * - 「## 確定」「## 仮置き」などのセクション見出しは、その節の行の
+ *   既定 commitment として追跡する (buildCanonFactsMd の出力と往復できる)
+ * - 行頭の [確定]/[約束済み]/[仮置き]/[意図的未確定]/[未判断]/[秘密]/[SECRET]
+ *   ラベルはセクション既定を上書きする
+ */
+export function parseCanonStatements(content: string): CanonFactInput[] {
+  const out: CanonFactInput[] = [];
+  let sectionCommitment: CommitmentLevel | undefined;
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (line.startsWith("#")) {
+      // 見出しの先頭語をラベルとして解釈 (例: "## 仮置き (未確定 — …)")
+      const head = line.match(/^#+\s*([^\s(（]+)/)?.[1];
+      if (head) {
+        const mapped = CANON_LABEL_TAGS[head.toLowerCase()] ??
+          CANON_LABEL_TAGS[head];
+        sectionCommitment = mapped?.commitment;
+      }
+      continue;
+    }
+    if (line.startsWith("---")) continue;
+    let body = line
+      .replace(/^(?:[-*・]|\d+[.)])\s*/, "")
+      .trim();
+    if (body.length === 0) continue;
+    let commitment: CommitmentLevel | undefined;
+    let disclosure: DisclosurePolicy | undefined;
+    // 先頭の [タグ] を順に解釈する (例: "[秘密・仮置き] 文", "[仮置き] 文")
+    const tagMatch = body.match(/^\[([^\]]+)\]\s*/);
+    if (tagMatch) {
+      const tags = tagMatch[1]!.split("・").map((t) => t.trim());
+      let consumed = false;
+      for (const tag of tags) {
+        const mapped = CANON_LABEL_TAGS[tag.toLowerCase()] ??
+          CANON_LABEL_TAGS[tag];
+        if (mapped?.commitment) commitment = mapped.commitment;
+        if (mapped?.disclosure) disclosure = mapped.disclosure;
+        if (mapped) consumed = true;
+      }
+      if (consumed) {
+        body = body.slice(tagMatch[0].length).trim();
+      }
+    }
+    if (body.length === 0) continue;
+    commitment ??= sectionCommitment;
+    if (commitment !== undefined || disclosure !== undefined) {
+      out.push({
+        statement: body,
+        ...(commitment !== undefined ? { commitment } : {}),
+        ...(disclosure !== undefined ? { disclosure } : {}),
+      });
+    } else {
+      out.push(body);
+    }
+  }
+  return out;
 }
 
 export type WriteProposeResult = {

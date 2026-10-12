@@ -84,7 +84,9 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
     throw new Error("writing contract does not match the approved proposal");
   }
 
-  const canonStatements = sceneCtx.canon_facts.map((f) => f.statement);
+  // 正典メモは commitment/disclosure つきのまま渡す (skills が [仮置き]
+  // [秘密] 等のラベルを付けてプロンプトに出す, spec §4.3)
+  const canonFacts = sceneCtx.canon_facts;
   const prevSummary =
     sceneCtx.prev_scenes.length > 0
       ? sceneCtx.prev_scenes
@@ -102,7 +104,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         contract: contract.payload,
         scene_title: sceneCtx.scene.title,
         scene_purpose: sceneCtx.scene.purpose,
-        canon_facts: canonStatements,
+        canon_facts: canonFacts,
         ...(prevSummary !== undefined
           ? { prev_scene_summary: prevSummary }
           : {}),
@@ -138,7 +140,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         contract: contract.payload,
         scene_title: sceneCtx.scene.title,
         prose_md: draft.prose_md,
-        canon_facts: canonStatements,
+        canon_facts: canonFacts,
       },
       model: payload.model,
       providerName: payload.provider,
@@ -165,7 +167,7 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
         contract: contract.payload,
         scene_title: sceneCtx.scene.title,
         scene_purpose: sceneCtx.scene.purpose,
-        canon_facts: canonStatements,
+        canon_facts: canonFacts,
         ...(prevSummary !== undefined
           ? { prev_scene_summary: prevSummary }
           : {}),

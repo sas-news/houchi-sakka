@@ -1,3 +1,7 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import BetterSqlite3 from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
   appendProgress,
@@ -323,5 +327,45 @@ describe("Phase 1b エンティティ", () => {
     expect(b.id).toBe(a.id);
     const got = await getProposalById(db, a.id);
     expect(got!.status).toBe("pending");
+  });
+});
+
+describe("migration 0008: canon_facts のコミットメント状態 + 開示ポリシー", () => {
+  it("列が既定値で追加され、provenance=secret は disclosure=secret へ移行される", () => {
+    const sqlite = new BetterSqlite3(":memory:");
+    const migrationsDir = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "migrations",
+    );
+    const apply = (file: string) => {
+      const body = readFileSync(join(migrationsDir, file), "utf8");
+      for (const stmt of body.split("--> statement-breakpoint")) {
+        const q = stmt.trim();
+        if (q) sqlite.exec(q);
+      }
+    };
+    // 0007 まで適用し旧スキーマの行を作る
+    for (const f of readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort()) {
+      if (f >= "0008") break;
+      apply(f);
+    }
+    sqlite.exec(
+      "INSERT INTO canon_facts (id, work_id, statement, provenance, created_at)" +
+        " VALUES ('f1','w1','駅長は裏切り者である','secret',0)," +
+        " ('f2','w1','汽車はもう走っていない','orchestrator',0)",
+    );
+    // 0008 適用
+    apply("0008_canon_fact_commitment.sql");
+    const rows = sqlite
+      .prepare("SELECT id, commitment, disclosure FROM canon_facts ORDER BY id")
+      .all() as { id: string; commitment: string; disclosure: string }[];
+    expect(rows).toEqual([
+      { id: "f1", commitment: "fixed", disclosure: "secret" },
+      { id: "f2", commitment: "fixed", disclosure: "normal" },
+    ]);
+    sqlite.close();
   });
 });

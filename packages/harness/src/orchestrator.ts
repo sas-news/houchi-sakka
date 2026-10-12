@@ -48,6 +48,8 @@ export const runOrchestratorTurn: JobHandler = async (job, ctx) => {
       canonFacts: threadCtx.canon_facts.map((f) => ({
         id: f.id,
         statement: f.statement,
+        commitment: f.commitment,
+        disclosure: f.disclosure,
       })),
       pendingProposals: threadCtx.proposals
         .filter((p) => p.status === "pending")

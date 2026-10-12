@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   checkForbidden,
   checkKnowledgeLeak,
+  checkProvisionalUse,
   checkRequiredEvents,
+  checkSecretKnowledge,
   contentTokens,
   countFindings,
   isSecretFact,
@@ -151,5 +153,96 @@ describe("validateProse / toCriticOutput / countFindings", () => {
     expect(asCritic.violations).toHaveLength(1);
     expect(asCritic.violations[0]!.severity).toBe("high");
     expect(asCritic.notes.every((n) => n.startsWith("[決定的検査]"))).toBe(true);
+  });
+});
+
+describe("spec 4.3: コミットメント状態の検査", () => {
+  it("disclosure=secret も秘密と判定する", () => {
+    expect(
+      isSecretFact({
+        statement: "駅長は裏切り者である",
+        provenance: "orchestrator",
+        disclosure: "secret",
+      }),
+    ).toBe(true);
+    expect(
+      isSecretFact({
+        statement: "汽車はもう走っていない",
+        provenance: "orchestrator",
+        disclosure: "normal",
+        commitment: "provisional",
+      }),
+    ).toBe(false);
+  });
+
+  it("provisional の事実を本文の確定事項として使うと検出する", () => {
+    const facts = [
+      {
+        statement: "黒服は機械であるかもしれない",
+        provenance: "orchestrator",
+        commitment: "provisional" as const,
+      },
+      {
+        statement: "汽車はもう走っていない",
+        provenance: "orchestrator",
+        commitment: "fixed" as const,
+      },
+    ];
+    // 文面一致で high
+    const high = checkProvisionalUse(
+      "実は、黒服は機械であるかもしれないのだ。",
+      facts,
+    );
+    const h = high.findings.find((f) => f.rule === "canon.provisional_use");
+    expect(h?.severity).toBe("high");
+    // 構成要素の出現揃いで medium
+    const medium = checkProvisionalUse("黒服は機械かもしれない。", facts);
+    const m = medium.findings.find((f) => f.rule === "canon.provisional_use");
+    expect(m?.severity).toBe("medium");
+    // fixed の事実は対象外
+    const none = checkProvisionalUse("汽車はもう走っていない。", facts);
+    expect(
+      none.findings.filter((f) => f.rule === "canon.provisional_use"),
+    ).toHaveLength(0);
+  });
+
+  it("secret の事実が契約の記憶ノートに含まれると指摘する", () => {
+    const facts = [
+      {
+        statement: "駅長は裏切り者である",
+        provenance: "orchestrator",
+        disclosure: "secret" as const,
+      },
+    ];
+    const r = checkSecretKnowledge(
+      { knowledge_notes: "視点人物は駅長は裏切り者であることを知っている" },
+      facts,
+    );
+    const f = r.findings.find((x) => x.rule === "canon.secret_knowledge");
+    expect(f?.severity).toBe("medium");
+    // 含まれなければ finding なし
+    const clean = checkSecretKnowledge({ knowledge_notes: "" }, facts);
+    expect(clean.findings).toHaveLength(0);
+  });
+
+  it("validateProse は provisional 使用と secret 混入をまとめて返す", () => {
+    const report = validateProse("黒服は機械であるかもしれないのだ。", {
+      contract: { ...CONTRACT, knowledge_notes: "駅長は裏切り者である" },
+      canonFacts: [
+        {
+          statement: "黒服は機械であるかもしれない",
+          provenance: "orchestrator",
+          commitment: "provisional",
+        },
+        {
+          statement: "駅長は裏切り者である",
+          provenance: "orchestrator",
+          disclosure: "secret",
+        },
+      ],
+    });
+    const rules = report.findings.map((f) => f.rule);
+    expect(rules).toContain("canon.provisional_use");
+    expect(rules).toContain("canon.secret_knowledge");
   });
 });

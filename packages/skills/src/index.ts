@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import {
+  canonFactLabel,
   DependencyEdgeInputSchema,
   PlanProposalPayloadSchema,
   type PlanProposalPayload,
@@ -33,6 +34,24 @@ export type SkillDefinition<I, O> = {
 const JSON_OUTPUT_DIRECTIVE =
   "出力は JSON オブジェクト1つだけを返してください。前後に説明文・コードフェンスを付けないでください。";
 
+/**
+ * 正典メモのプロンプト入力 1 件。文字列なら無印の確定正典として、
+ * CanonFact 形なら commitment/disclosure のラベルを先頭に付けて渡す
+ * (spec §4.3: 未確定と秘密をモデルに明示する)。
+ */
+export type CanonFactPromptItem =
+  | string
+  | {
+      statement: string;
+      commitment?: string | undefined;
+      disclosure?: string | undefined;
+    };
+
+function renderCanonFact(f: CanonFactPromptItem): string {
+  if (typeof f === "string") return f;
+  return `${canonFactLabel(f)}${f.statement}`;
+}
+
 // ---------------------------------------------------------------------------
 // planner — 作品の計画 (episodes→scenes の骨格) を作る
 // ---------------------------------------------------------------------------
@@ -48,8 +67,8 @@ export type PlannerInput = {
   };
   /** /plan/tree.md の内容 (現状の骨格)。 */
   plan_tree: string;
-  /** 正典メモの宣言文リスト。 */
-  canon_facts: string[];
+  /** 正典メモ (ラベル付き: [仮置き]/[未判断] 等は未確定)。 */
+  canon_facts: CanonFactPromptItem[];
   /** 作者からの計画指示 (あれば)。 */
   guidance?: string;
 };
@@ -96,7 +115,7 @@ export const plannerSkill: SkillDefinition<PlannerInput, PlannerOutput> = {
           "",
           "【正典メモ】",
           input.canon_facts.length > 0
-            ? input.canon_facts.map((f) => `- ${f}`).join("\n")
+            ? input.canon_facts.map((f) => `- ${renderCanonFact(f)}`).join("\n")
             : "(なし)",
           "",
           input.guidance ? `【作者の指示】\n${input.guidance}` : "",
@@ -119,8 +138,8 @@ export type WriterInput = {
   /** 対象シーンのタイトル/目的。 */
   scene_title: string;
   scene_purpose: string;
-  /** 関連する正典メモ。 */
-  canon_facts: string[];
+  /** 関連する正典メモ (ラベル付き: [仮置き]/[秘密] 等)。 */
+  canon_facts: CanonFactPromptItem[];
   /** 直前シーンの要約 (連続性のため。あれば)。 */
   prev_scene_summary?: string;
   /** critic の検査結果 (revise 段で渡す)。 */
@@ -173,6 +192,9 @@ export const writerSkill: SkillDefinition<WriterInput, WriterOutput> = {
           "渡された Writing Contract に厳密に従って本文を書いてください。",
           "禁止事項を破ってはいけません。必須イベントはすべて含めてください。",
           "正典メモと矛盾する設定を新たに作らないでください。",
+          "正典メモの先頭ラベル: [約束済み]=近い将来の計画として約束済み。",
+          "[仮置き]/[未判断]/[意図的未確定]=未確定なので、本文の確定事項として使ってはいけません。",
+          "[秘密]=読者にも未登場人物にも知られたくない事実なので、本文には絶対に書かないでください。",
           input.critique
             ? "検査で指摘された問題をすべて解消した版を書いてください。"
             : "",
@@ -196,7 +218,7 @@ export const writerSkill: SkillDefinition<WriterInput, WriterOutput> = {
           "",
           "【正典メモ】",
           input.canon_facts.length > 0
-            ? input.canon_facts.map((f) => `- ${f}`).join("\n")
+            ? input.canon_facts.map((f) => `- ${renderCanonFact(f)}`).join("\n")
             : "(なし)",
           ...(input.prev_scene_summary
             ? ["", "【直前シーンの要約】", input.prev_scene_summary]
@@ -221,7 +243,7 @@ export type CriticInput = {
   scene_title: string;
   /** 検査対象の本文。 */
   prose_md: string;
-  canon_facts: string[];
+  canon_facts: CanonFactPromptItem[];
 };
 
 export const CriticOutputSchema = z.object({
@@ -250,7 +272,11 @@ export const criticSkill: SkillDefinition<CriticInput, CriticOutput> = {
           "あなたは小説作品の「検査担当」です。",
           "生成本文が Writing Contract に適合しているか検査してください。",
           "必須イベントの欠落、禁止事項への抵触、POV逸脱、正典メモとの矛盾を",
-          "violations に列挙してください。severity は",
+          "violations に列挙してください。",
+          "正典メモの先頭ラベル: [仮置き]/[未判断]/[意図的未確定] は未確定です。",
+          "本文が未確定の正典を確定事項として使っていたら違反です (high 相当)。",
+          "[秘密] の正典の内容が本文に出ていたら秘密の早期開示として違反です。",
+          "severity は",
           "high=必須イベント欠落・禁止事項違反・正典と明確に矛盾、",
           "medium=契約の意図から外れているが致命傷ではない、low=些細な違和感、",
           "と判定してください。",
@@ -276,7 +302,7 @@ export const criticSkill: SkillDefinition<CriticInput, CriticOutput> = {
           "",
           "【正典メモ】",
           input.canon_facts.length > 0
-            ? input.canon_facts.map((f) => `- ${f}`).join("\n")
+            ? input.canon_facts.map((f) => `- ${renderCanonFact(f)}`).join("\n")
             : "(なし)",
           "",
           "【検査対象の本文】",
@@ -315,7 +341,12 @@ export type FixerInput = {
   work: { title: string; premise: string };
   /** レビュー対象だった変更セット。 */
   change_set: { title: string; description: string };
-  canon_facts: { id: string; statement: string }[];
+  canon_facts: {
+    id: string;
+    statement: string;
+    commitment?: string | undefined;
+    disclosure?: string | undefined;
+  }[];
   findings: FixerFindingInput[];
 };
 
@@ -408,7 +439,7 @@ export const fixerSkill: SkillDefinition<FixerInput, FixPlan> = {
           "【正典メモ】",
           input.canon_facts.length > 0
             ? input.canon_facts
-                .map((f) => `- ${f.statement} (fact_id: ${f.id})`)
+                .map((f) => `- ${renderCanonFact(f)} (fact_id: ${f.id})`)
                 .join("\n")
             : "(なし)",
           "",

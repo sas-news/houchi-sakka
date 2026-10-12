@@ -143,6 +143,10 @@ export interface CanonFactInfo {
   id: string;
   work_id: string;
   statement: string;
+  /** コミットメント状態 (spec §4.3)。 */
+  commitment: "fixed" | "committed" | "provisional" | "open_by_design" | "undecided";
+  /** 開示ポリシー (spec §4.3)。 */
+  disclosure: "normal" | "secret";
   provenance: string;
   created_at: number;
 }
@@ -152,11 +156,15 @@ export interface ChangeSetOp {
     | "retire_fact"
     | "revise_fact"
     | "add_fact"
+    | "set_fact_commitment"
     | "update_work"
     | "rewrite_scene";
   fact_id?: string;
   new_statement?: string;
   statement?: string;
+  /** 正典の確度・開示 (add_fact/revise_fact/set_fact_commitment)。 */
+  commitment?: CanonFactInfo["commitment"];
+  disclosure?: CanonFactInfo["disclosure"];
   patch?: Partial<
     Pick<WorkInfo, "title" | "premise" | "genre" | "charter" | "policy">
   >;

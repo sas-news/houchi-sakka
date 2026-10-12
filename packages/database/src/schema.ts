@@ -186,6 +186,10 @@ export const canonFacts = sqliteTable(
     id: text("id").primaryKey(),
     workId: text("work_id").notNull(),
     statement: text("statement").notNull(),
+    /** コミットメント状態 (spec §4.3): fixed/committed/provisional/open_by_design/undecided。 */
+    commitment: text("commitment").notNull().default("fixed"),
+    /** 開示ポリシー (spec §4.3): normal/secret。 */
+    disclosure: text("disclosure").notNull().default("normal"),
     provenance: text("provenance").notNull(),
     /** この行が現行になった正典リビジョン (spec §6.3。無バージョン追加は NULL)。 */
     validFromRev: integer("valid_from_rev"),

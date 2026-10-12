@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { textToTiptapDoc } from "@houchi/contracts";
 import {
+  addCanonFacts,
   createEpisode,
   createScene,
   createSceneRevision,
@@ -139,5 +140,80 @@ describe("workspace 仮想FS", () => {
     expect(
       parseCanonStatements("- 事実A\n* 事実B\n・事実C\n1. 事実D\n\n事実E"),
     ).toEqual(["事実A", "事実B", "事実C", "事実D", "事実E"]);
+  });
+});
+
+describe("spec 4.3: facts.md の確度グループ化", () => {
+  it("/canon/facts.md は commitment ごとにグループ化し、秘密は [秘密] マークを付ける", async () => {
+    const { db, work } = await setupWork();
+    await addCanonFacts(db, {
+      workId: work.id,
+      statements: [
+        "汽車はもう走っていない",
+        { statement: "線路の先は海上である", commitment: "committed" },
+        { statement: "黒服は機械であるかもしれない", commitment: "provisional" },
+        { statement: "鐘の回数は不明", commitment: "open_by_design" },
+        { statement: "町の名前", commitment: "undecided" },
+        { statement: "駅長は裏切り者である", disclosure: "secret" },
+      ],
+      provenance: "test",
+    });
+    const file = await readFile(db, work, PATH_CANON_FACTS);
+    const content = file!.content;
+    // グループ見出しの順序
+    const order = [
+      "## 確定",
+      "## 約束済み",
+      "## 仮置き",
+      "## 意図的未確定",
+      "## 未判断",
+    ];
+    let last = -1;
+    for (const h of order) {
+      const idx = content.indexOf(h);
+      expect(idx).toBeGreaterThan(last);
+      last = idx;
+    }
+    expect(content).toContain("- [秘密] 駅長は裏切り者である");
+    expect(content).toContain("- 黒服は機械であるかもしれない");
+    // 仮置き見出しに利用禁止の注記
+    expect(content).toContain("本文の確定事項として使わない");
+  });
+
+  it("parseCanonStatements はタグ・見出し・区切り線を解釈してラウンドトリップする", () => {
+    const parsed = parseCanonStatements(
+      [
+        "# 正典メモ",
+        "",
+        "## 確定",
+        "- 汽車はもう走っていない",
+        "- [秘密] 駅長は裏切り者である",
+        "",
+        "## 仮置き (未確定 — 本文の確定事項として使わない)",
+        "- 黒服は機械であるかもしれない",
+        "- [約束済み・秘密] 線路の先は海上である",
+        "---",
+        "",
+      ].join("\n"),
+    );
+    expect(parsed).toEqual([
+      // セクション見出しの確度が既定として付く
+      { statement: "汽車はもう走っていない", commitment: "fixed" },
+      {
+        statement: "駅長は裏切り者である",
+        commitment: "fixed",
+        disclosure: "secret",
+      },
+      {
+        statement: "黒服は機械であるかもしれない",
+        commitment: "provisional",
+      },
+      // 行頭タグはセクション既定を上書きする
+      {
+        statement: "線路の先は海上である",
+        commitment: "committed",
+        disclosure: "secret",
+      },
+    ]);
   });
 });
