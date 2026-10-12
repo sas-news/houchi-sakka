@@ -285,6 +285,11 @@ export const changeSets = sqliteTable(
      * 適用前の値 ({charter, policy} の JSON。それ以外は NULL)。
      */
     prevSettings: text("prev_settings"),
+    /**
+     * 通常承認の直前に実行した適用前検査の結果
+     * ({checked_at, warnings, violations} の JSON。未実施は NULL)。
+     */
+    preApplyCheck: text("pre_apply_check"),
     createdAt: integer("created_at").notNull(),
     decidedAt: integer("decided_at"),
     appliedAt: integer("applied_at"),

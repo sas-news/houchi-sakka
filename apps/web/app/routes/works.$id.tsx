@@ -939,6 +939,38 @@ function ChangesView({
             </>
           ) : null}
 
+          {sel.pre_apply_check ? (
+            <>
+              <strong>適用前検査</strong>
+              <p className="muted">
+                {formatDateTime(sel.pre_apply_check.checked_at)} に実施
+                {sel.pre_apply_check.violations.length === 0 &&
+                sel.pre_apply_check.warnings.length === 0
+                  ? " — 問題は見つかりませんでした"
+                  : ""}
+              </p>
+              {sel.pre_apply_check.violations.length > 0 ? (
+                <ul className="findings">
+                  {sel.pre_apply_check.violations.map((v, i) => (
+                    <li key={`v-${i}`}>
+                      <span className="badge badge--warn">違反</span>{" "}
+                      {v.detail}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {sel.pre_apply_check.warnings.length > 0 ? (
+                <ul className="findings">
+                  {sel.pre_apply_check.warnings.map((w, i) => (
+                    <li key={`w-${i}`}>
+                      <span className="badge">警告</span> {w.detail}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          ) : null}
+
           {sel.findings.length > 0 ? (
             <>
               <strong>レビュー結果</strong>

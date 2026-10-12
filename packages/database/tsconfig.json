@@ -6,6 +6,6 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "references": [{ "path": "../contracts" }],
+  "references": [{ "path": "../contracts" }, { "path": "../validators" }],
   "include": ["src"]
 }

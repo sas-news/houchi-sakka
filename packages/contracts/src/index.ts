@@ -1169,6 +1169,34 @@ export const ChangeSetImpactSchema = z.object({
 });
 export type ChangeSetImpact = z.infer<typeof ChangeSetImpactSchema>;
 
+/** 適用前検査の1項目 (spec §5.3 step 6-8)。 */
+export const PreApplyCheckItemSchema = z.object({
+  /**
+   * 検査種別。impact_grew=影響範囲の拡大 / missing_ref=参照先の消失 /
+   * stale_fact=正典の改定済み / contract_check=本文の決定的検査 (info 相当) /
+   * contract_violation=本文の決定的検査での違反。
+   */
+  kind: z.string().min(1),
+  /** 人向け説明 (日本語)。 */
+  detail: z.string(),
+});
+export type PreApplyCheckItem = z.infer<typeof PreApplyCheckItemSchema>;
+
+/**
+ * 適用前検査の結果 (change_sets.pre_apply_check)。
+ * 通常承認の直前に実施し、D1 単一ストアで「一時ブランチでの検査」を
+ * 代替する同期検証 (spec §5.3 step 6)。force 適用 (§5.4) では実施しない。
+ */
+export const PreApplyCheckSchema = z.object({
+  /** 検査を実行した時刻。 */
+  checked_at: z.number(),
+  /** 適用は通るが注意が要るもの (影響範囲の拡大・info 相当の本文検査)。 */
+  warnings: z.array(PreApplyCheckItemSchema),
+  /** 通常承認を保留にする違反 (参照先の消失・契約違反)。 */
+  violations: z.array(PreApplyCheckItemSchema),
+});
+export type PreApplyCheck = z.infer<typeof PreApplyCheckSchema>;
+
 export const ChangeSetSchema = z.object({
   id: z.string(),
   work_id: z.string(),
@@ -1178,6 +1206,8 @@ export const ChangeSetSchema = z.object({
   ops: z.array(ChangeSetOpSchema),
   status: ChangeSetStatusSchema,
   impact: ChangeSetImpactSchema,
+  /** 通常承認の直前に実行した適用前検査 (spec §5.3)。未実施は null。 */
+  pre_apply_check: PreApplyCheckSchema.nullable(),
   /** force 適用で 1 (spec §5.4)。 */
   force: z.number().int(),
   /** 強制適用時に記録した変更理由 (spec §5.4)。 */
@@ -1422,6 +1452,8 @@ export const ApproveChangeSetResponseSchema = z.object({
   change_set: ChangeSetWithFindingsSchema,
   /** 起票した review_change ジョブ (キー未設定などで起票なしは null)。 */
   job: AgentJobSchema.nullable(),
+  /** 実施した適用前検査 (通常承認時。force 適用・検査未実施は null)。 */
+  pre_apply_check: PreApplyCheckSchema.nullable(),
 });
 export type ApproveChangeSetResponse = z.infer<
   typeof ApproveChangeSetResponseSchema

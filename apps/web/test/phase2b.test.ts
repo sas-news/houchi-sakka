@@ -581,6 +581,250 @@ describe("spec gap-fill: 強制適用の理由記録・楽観的競合・キー�
     expect(applied.force_reason).toBe("対話を待たずに直したい");
   });
 
+  it("適用前検証: 契約の禁止事項に違反する rewrite_scene は通常承認で 409・force は通る", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId, threadId, messageId } = await setupWork(call);
+
+    // 契約つきシーン (禁止事項「魔法」) を用意する
+    const propRes = await call("POST", "/api/internal/proposals", {
+      work_id: workId,
+      thread_id: threadId,
+      message_id: messageId,
+      kind: "writing_contract",
+      payload: {
+        episode_title: "第1話",
+        scene_title: "廃線ホーム",
+        scene_purpose: "導入",
+        contract: {
+          role: "導入",
+          pov: "三人称",
+          forbidden: ["魔法"],
+        },
+      },
+    });
+    const { proposal } = (await propRes.json()) as {
+      proposal: { payload: { scene_id: string } };
+    };
+    const sceneId = proposal.payload.scene_id;
+
+    const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "本文の書き換え",
+      kind: "revision",
+      ops: [
+        {
+          op: "rewrite_scene",
+          scene_id: sceneId,
+          text: "少女は魔法を使って汽車を呼び寄せた。",
+        },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const { change_set } = (await res.json()) as {
+      change_set: { id: string };
+    };
+
+    // 通常承認 → 契約違反で 409、status は proposed のまま
+    const denied = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(denied.status).toBe(409);
+    const deniedBody = (await denied.json()) as {
+      error: { message: string };
+      pre_apply_check: {
+        violations: { kind: string; detail: string }[];
+      };
+    };
+    expect(deniedBody.error.message).toContain("魔法");
+    expect(
+      deniedBody.pre_apply_check.violations.map((v) => v.kind),
+    ).toContain("contract_violation");
+
+    // 検査結果は変更セットに記録される
+    const listRes = await call(
+      "GET",
+      `/api/works/${workId}/changes`,
+      undefined,
+      { token: null, cookie },
+    );
+    const { change_sets } = (await listRes.json()) as {
+      change_sets: {
+        id: string;
+        status: string;
+        pre_apply_check: {
+          checked_at: number;
+          violations: { kind: string }[];
+        } | null;
+      }[];
+    };
+    const cs = change_sets.find((c) => c.id === change_set.id)!;
+    expect(cs.status).toBe("proposed");
+    expect(cs.pre_apply_check).not.toBeNull();
+    expect(
+      cs.pre_apply_check!.violations.map((v) => v.kind),
+    ).toContain("contract_violation");
+
+    // force 適用は検査を迂回して通る (spec §5.4)
+    const forced = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      { force: true, reason: "検査を承知で適用する" },
+      { token: null, cookie },
+    );
+    expect(forced.status).toBe(200);
+    const forcedBody = (await forced.json()) as {
+      change_set: { status: string; kind: string };
+      pre_apply_check: unknown;
+    };
+    expect(forcedBody.change_set.status).toBe("applied");
+    expect(forcedBody.change_set.kind).toBe("force_override");
+  });
+
+  it("適用前検証: 提案後に影響が広がると警告つきで適用される", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    const { factId } = await seedSceneWithDep(call, cookie, workId);
+
+    const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "汽車の設定変更",
+      ops: [
+        {
+          op: "revise_fact",
+          fact_id: factId,
+          new_statement: "汽車は週1だけ走っている",
+        },
+      ],
+    });
+    const { change_set } = (await res.json()) as {
+      change_set: { id: string };
+    };
+
+    // 提案後に、新しい文面と文面が近い正典を追加 → 再計算で影響が拡大
+    await call("POST", `/api/internal/works/${workId}/canon-facts`, {
+      statements: ["汽車は週1だけ走っているという村の噂"],
+      provenance: "test",
+    });
+
+    const okRes = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(okRes.status).toBe(200);
+    const body = (await okRes.json()) as {
+      change_set: { status: string };
+      pre_apply_check: {
+        warnings: { kind: string; detail: string }[];
+        violations: { kind: string }[];
+      } | null;
+    };
+    expect(body.change_set.status).toBe("applied");
+    expect(body.pre_apply_check).not.toBeNull();
+    expect(body.pre_apply_check!.violations.length).toBe(0);
+    expect(
+      body.pre_apply_check!.warnings.map((w) => w.kind),
+    ).toContain("impact_grew");
+    expect(
+      body.pre_apply_check!.warnings.some((w) =>
+        w.detail.includes("汽車は週1だけ走っているという村の噂"),
+      ),
+    ).toBe(true);
+  });
+
+  it("適用前検証: 改定対象の正典が閉じられていると 409 で理由を説明する", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    const { factId } = await seedSceneWithDep(call, cookie, workId);
+
+    // 先に同じ fact を retire する変更セットを適用して閉じる
+    const a = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "先に廃止する側",
+      ops: [{ op: "retire_fact", fact_id: factId }],
+    });
+    const { change_set: aCs } = (await a.json()) as {
+      change_set: { id: string };
+    };
+    const aApprove = await call(
+      "POST",
+      `/api/change-sets/${aCs.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(aApprove.status).toBe(200);
+
+    // 閉じた fact を revise する変更セット → 構造検証で違反
+    const b = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "閉じた正典の改定",
+      ops: [
+        {
+          op: "revise_fact",
+          fact_id: factId,
+          new_statement: "汽車は週1だけ走っている",
+        },
+      ],
+    });
+    const { change_set: bCs } = (await b.json()) as {
+      change_set: { id: string };
+    };
+    const denied = await call(
+      "POST",
+      `/api/change-sets/${bCs.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(denied.status).toBe(409);
+    const deniedBody = (await denied.json()) as {
+      error: { message: string };
+      pre_apply_check: { violations: { kind: string }[] };
+    };
+    expect(
+      deniedBody.pre_apply_check.violations.map((v) => v.kind),
+    ).toContain("stale_fact");
+    expect(deniedBody.error.message).toContain("汽車はもう走っていない");
+  });
+
+  it("適用前検証: 参照先のシーンが無い rewrite_scene は 409", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+    await seedSceneWithDep(call, cookie, workId);
+
+    const res = await call("POST", `/api/internal/works/${workId}/change-sets`, {
+      title: "存在しないシーンの書き換え",
+      kind: "revision",
+      ops: [
+        {
+          op: "rewrite_scene",
+          scene_id: "scene-that-does-not-exist",
+          text: "書き換え後の本文。",
+        },
+      ],
+    });
+    const { change_set } = (await res.json()) as {
+      change_set: { id: string };
+    };
+
+    const denied = await call(
+      "POST",
+      `/api/change-sets/${change_set.id}/approve`,
+      {},
+      { token: null, cookie },
+    );
+    expect(denied.status).toBe(409);
+    const deniedBody = (await denied.json()) as {
+      pre_apply_check: { violations: { kind: string }[] };
+    };
+    expect(
+      deniedBody.pre_apply_check.violations.map((v) => v.kind),
+    ).toContain("missing_ref");
+  });
+
   it("GET /api/keys は使用中の作品数 works_using を返す", async () => {
     const { app } = makeApp();
     const call = makeCall(app);

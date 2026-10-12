@@ -137,6 +137,9 @@ importers:
       '@houchi/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@houchi/validators':
+        specifier: workspace:*
+        version: link:../validators
       drizzle-orm:
         specifier: ^0.44.5
         version: 0.44.7(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(kysely@0.29.6)

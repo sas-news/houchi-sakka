@@ -39,6 +39,8 @@ import {
   type JobStatus,
   type ProgressEvent,
   type ProgressEventType,
+  type PreApplyCheck,
+  type PreApplyCheckItem,
   type Proposal,
   type ProviderKey,
   type PublicWorkEpisode,
@@ -51,6 +53,7 @@ import {
   type WorkStatus,
   type WritingContract,
 } from "@houchi/contracts";
+import { checkForbidden, checkRequiredEvents } from "@houchi/validators";
 
 export * from "./schema.js";
 
@@ -1259,6 +1262,10 @@ function rowToChangeSet(r: Row): ChangeSet {
     message_id: r.message_id ?? null,
     prev_settings:
       r.prev_settings == null ? null : JSON.parse(String(r.prev_settings)),
+    pre_apply_check:
+      r.pre_apply_check == null
+        ? null
+        : JSON.parse(String(r.pre_apply_check)),
     created_at: r.created_at,
     decided_at: r.decided_at ?? null,
     applied_at: r.applied_at ?? null,
@@ -1387,6 +1394,8 @@ export async function updateChangeSetState(
     forceReason?: string | null | undefined;
     /** 適用前の works.charter/policy スナップショット (JSON 文字列)。 */
     prevSettings?: string | null | undefined;
+    /** 適用前検査の結果 (JSON 文字列)。 */
+    preApplyCheck?: string | null | undefined;
     decidedAt?: number | null;
     appliedAt?: number | null;
   },
@@ -1400,6 +1409,7 @@ export async function updateChangeSetState(
       force = ${input.force ?? cur.force},
       force_reason = ${input.forceReason === undefined ? cur.force_reason : input.forceReason},
       prev_settings = ${input.prevSettings === undefined ? (cur.prev_settings === null ? null : JSON.stringify(cur.prev_settings)) : input.prevSettings},
+      pre_apply_check = ${input.preApplyCheck === undefined ? (cur.pre_apply_check === null ? null : JSON.stringify(cur.pre_apply_check)) : input.preApplyCheck},
       decided_at = ${input.decidedAt === undefined ? cur.decided_at : input.decidedAt},
       applied_at = ${input.appliedAt === undefined ? cur.applied_at : input.appliedAt}
     WHERE id = ${input.id}
@@ -1634,6 +1644,129 @@ export function manualEditImpact(input: {
     contracts: [],
     summary: "手編集による本文の変更",
   };
+}
+
+// --- 適用前検証 (spec §5.3 step 6-8: verify-then-commit) ---
+//
+// D1 は単一ストアで「一時ブランチに適用して検査」はできないため、
+// 通常承認の直前に同期で走らせる検査として実装する。実行するのは
+// 決定的に検査できるものだけ (spec §10) — 文意の矛盾は適用後の
+// review_change に委ねる。
+// - 影響再計算: 提案時の impact と今の computeChangeSetImpact を比較し、
+//   新たに影響に入ったシーン/正典を warnings に出す (拡大だけ。縮小は
+//   安全側の変化なので黙る)。
+// - ops の構造検証: 参照先 (scene_id / fact_id) の存在と、fact ops の
+//   対象がまだ現行 (valid_to_rev 未設定) かを見る。
+// - 本文 ops の決定的検査: rewrite_scene は対象シーンの最新契約に対して
+//   checkForbidden / checkRequiredEvents を実行し、info 以外の検出を
+//   violations とする (info はヒューリスティック未検出なので warnings)。
+// 結果は change_sets.pre_apply_check に毎回記録する。
+
+export async function verifyChangeSetForApply(
+  db: DbLike,
+  input: { changeSetId: string },
+): Promise<PreApplyCheck | null> {
+  const cs = await getChangeSetById(db, input.changeSetId);
+  if (!cs) return null;
+  const warnings: PreApplyCheckItem[] = [];
+  const violations: PreApplyCheckItem[] = [];
+
+  // (a) 影響再計算: 提案時に記録した impact と現在の計算を突き合わせ、
+  // 新たに影響に入ったエンティティを警告する。
+  const current = await computeChangeSetImpact(db, {
+    workId: cs.work_id,
+    ops: cs.ops,
+  });
+  const recordedScenes = new Set(cs.impact.scenes.map((s) => s.id));
+  for (const s of current.scenes) {
+    if (!recordedScenes.has(s.id)) {
+      warnings.push({
+        kind: "impact_grew",
+        detail: `シーン「${s.title}」が新たに影響対象に入りました (${s.reason})`,
+      });
+    }
+  }
+  const recordedFacts = new Set(cs.impact.facts.map((f) => f.id));
+  for (const f of current.facts) {
+    if (!recordedFacts.has(f.id)) {
+      warnings.push({
+        kind: "impact_grew",
+        detail: `正典「${f.statement}」が新たに影響対象に入りました (${f.reason})`,
+      });
+    }
+  }
+
+  // (b) ops の構造検証: 参照先の存在と、fact ops の対象の現行性。
+  const sceneCache = new Map<string, Scene | null>();
+  const sceneOf = async (id: string) => {
+    if (!sceneCache.has(id)) sceneCache.set(id, await getSceneById(db, id));
+    return sceneCache.get(id)!;
+  };
+  for (const op of cs.ops) {
+    if (op.op === "retire_fact" || op.op === "revise_fact") {
+      const fact = await getCanonFactById(db, op.fact_id);
+      const opLabel = op.op === "retire_fact" ? "廃止" : "改定";
+      if (!fact || fact.work_id !== cs.work_id) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `${opLabel}対象の正典が見つかりません (fact_id=${op.fact_id})。すでに整理された可能性があります`,
+        });
+      } else if (fact.valid_to_rev !== null) {
+        violations.push({
+          kind: "stale_fact",
+          detail: `${opLabel}対象の正典「${fact.statement}」は rev${fact.valid_to_rev} で既に閉じられています。別の変更と重なっているため内容を見直してください`,
+        });
+      }
+    } else if (op.op === "rewrite_scene") {
+      const scene = await sceneOf(op.scene_id);
+      if (!scene) {
+        violations.push({
+          kind: "missing_ref",
+          detail: `書き換え対象のシーンが見つかりません (scene_id=${op.scene_id})。シーンが削除・再構成された可能性があります`,
+        });
+      }
+    }
+    // add_fact / update_work は参照先を持たないので検査対象なし。
+  }
+
+  // (c) 本文 ops の決定的検査: rewrite_scene は対象シーンの最新契約に
+  // 対して checkForbidden / checkRequiredEvents を実行する。
+  for (const op of cs.ops) {
+    if (op.op !== "rewrite_scene") continue;
+    const scene = await sceneOf(op.scene_id);
+    if (!scene) continue; // 参照先消失は (b) で違反済み
+    const contract = await getLatestContractByScene(db, op.scene_id);
+    if (!contract) {
+      warnings.push({
+        kind: "contract_check",
+        detail: `シーン「${scene.title}」に執筆契約が無いため、本文の決定的検査をスキップしました`,
+      });
+      continue;
+    }
+    const reports = [
+      checkForbidden(op.text, contract.payload),
+      checkRequiredEvents(op.text, contract.payload),
+    ];
+    for (const f of reports.flatMap((r) => r.findings)) {
+      const entry = {
+        kind: f.severity === "info" ? "contract_check" : "contract_violation",
+        detail: `シーン「${scene.title}」: ${f.detail}`,
+      };
+      if (f.severity === "info") warnings.push(entry);
+      else violations.push(entry);
+    }
+  }
+
+  const check: PreApplyCheck = {
+    checked_at: now(),
+    warnings,
+    violations,
+  };
+  await updateChangeSetState(db, {
+    id: cs.id,
+    preApplyCheck: JSON.stringify(check),
+  });
+  return check;
 }
 
 // --- ops 適用 (spec §5.3) ---

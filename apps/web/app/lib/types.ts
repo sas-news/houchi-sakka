@@ -172,6 +172,19 @@ export interface ChangeSetImpact {
   summary: string;
 }
 
+/** 適用前検査の1項目 (spec §5.3 step 6-8)。 */
+export interface PreApplyCheckItemInfo {
+  kind: string;
+  detail: string;
+}
+
+/** 通常承認の直前に実行した適用前検査 (force 適用・未実施は null)。 */
+export interface PreApplyCheckInfo {
+  checked_at: number;
+  warnings: PreApplyCheckItemInfo[];
+  violations: PreApplyCheckItemInfo[];
+}
+
 export interface ReviewFindingInfo {
   id: string;
   change_set_id: string;
@@ -205,6 +218,8 @@ export interface ChangeSetInfo {
   base_rev: number | null;
   /** charter/policy 更新の適用時に退避した旧値 (なければ null)。 */
   prev_settings: { charter: unknown | null; policy: unknown | null } | null;
+  /** 通常承認の直前に実行した適用前検査 (未実施は null)。 */
+  pre_apply_check: PreApplyCheckInfo | null;
   findings: ReviewFindingInfo[];
   created_at: number;
   decided_at: number | null;

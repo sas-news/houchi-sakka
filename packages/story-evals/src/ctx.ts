@@ -266,6 +266,7 @@ export function makeEvalCtx(args: {
         force_reason: null,
         base_rev: null,
         prev_settings: null,
+        pre_apply_check: null,
         message_id: req.message_id ?? null,
         created_at: 0,
         decided_at: null,
