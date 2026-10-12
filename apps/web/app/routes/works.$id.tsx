@@ -797,12 +797,18 @@ function ChangesView({
   onForce,
   onToggleFinding,
   busy,
+  error,
+  onSelect,
 }: {
   changeSets: ChangeSetInfo[];
   onDecide: (id: string, action: "approve" | "reject") => void;
   onForce: (id: string) => void;
   onToggleFinding: (id: string, status: "open" | "dismissed") => void;
   busy: boolean;
+  /** 承認/却下の失敗理由 (適用前検査での保留メッセージなど)。 */
+  error: string | null;
+  /** 別の変更セットを選んだときに表示中のエラーを消す。 */
+  onSelect: () => void;
 }) {
   const sorted = useMemo(
     () => [...changeSets].sort((a, b) => b.created_at - a.created_at),
@@ -828,7 +834,10 @@ function ChangesView({
               key={c.id}
               type="button"
               className={`scene-item${c.id === selId ? " active" : ""}`}
-              onClick={() => setSelId(c.id)}
+              onClick={() => {
+                setSelId(c.id);
+                if (c.id !== selId) onSelect();
+              }}
             >
               {c.title}{" "}
               <span className={CS_STATUS_BADGE[c.status]}>
@@ -1008,6 +1017,8 @@ function ChangesView({
               </ul>
             </>
           ) : null}
+
+          {error ? <p className="error-text">{error}</p> : null}
 
           {sel.status === "proposed" ? (
             <div className="form-actions">
@@ -1840,6 +1851,8 @@ export default function WorkPage({
             onForce={(id) => void forceChangeSet(id)}
             onToggleFinding={(id, s) => void toggleFinding(id, s)}
             busy={sending || running}
+            error={error}
+            onSelect={() => setError(null)}
           />
         </section>
       ) : null}
