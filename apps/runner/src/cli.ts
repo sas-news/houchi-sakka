@@ -323,6 +323,84 @@ function phase2bStubResponder(req: ProviderRequest): string {
   ].join("\n");
 }
 
+/**
+ * STUB_SCENARIO=entities: StoryEntity/KnowledgeEvent E2E 用の応答。
+ * - 執筆担当: ドラフトは秘密の正典を本文に書いてしまう
+ *   (checkKnowledgeLeak が弾き → revise で修正版を返す)。
+ * - orchestrator: 1往復目=前提確定、2往復目=add_entity+秘密add_fact の
+ *   CHANGESET、3往復目=entity↔fact リンク+KnowledgeEvent の CHANGESET
+ *   (注入された [fact_id: …]/[entity_id: …] を正規表現で拾う)、
+ *   4往復目=<<PROPOSE>>。
+ */
+function entitiesStubResponder(req: ProviderRequest): string {
+  const joined = req.input.map((m) => m.content).join("\n");
+
+  if (joined.includes("検査担当")) {
+    return JSON.stringify({ violations: [], notes: ["契約に適合"] });
+  }
+  if (joined.includes("執筆担当")) {
+    const revised = joined.includes("この指摘を直して書き直してください");
+    const prose = revised
+      ? [
+          "雨上がりの廃線ホームにアキラが立っていた。",
+          "",
+          "彼は濡れた切符を眺め、それから意を決したように線路の先を見上げた。もう戻る汽車は来ない。来ないからこそ、歩き出す理由ができた。",
+        ].join("\n")
+      : [
+          "雨上がりの廃線ホームにアキラが立っていた。",
+          "",
+          "アキラは王の隠し子である。彼は濡れた切符を眺め、それから意を決したように線路の先を見上げた。",
+        ].join("\n");
+    return JSON.stringify({
+      prose_md: prose,
+      canon_facts_new: [],
+      depends_on: [
+        { target_kind: "canon_fact", target_ref: "汽車はもう走っていない" },
+      ],
+    });
+  }
+
+  if (joined.includes("保留中の提案 (作者の決定待ち")) {
+    return "出している提案の決定を待っています。承認か却下、修正の指示をください。";
+  }
+  const userTurns = req.input.filter((m) => m.role === "user").length;
+  if (userTurns >= 4) {
+    return [
+      "登場要素と知識を記録しました。では冒頭シーンをこの契約で書きましょう。問題なければ承認してください。",
+      '<<PROPOSE {"episode_title": "第1話", "scene_title": "廃線ホーム", "scene_purpose": "主人公の旅立ちの動機を示す導入", "contract": {"role": "物語の導入。アキラが旅に出る決意をする", "pov": "三人称・語り部", "required_events": ["雨上がりの廃線ホーム", "濡れた切符", "線路の先を見上げる"], "forbidden": ["説明口調の背景説明"], "knowledge_notes": "", "connections": "前話なし"}}>>',
+    ].join("\n");
+  }
+  if (userTurns === 3) {
+    // 注入された [entity_id: …] / [fact_id: …] を拾って
+    // 秘密の正典↔アキラのリンク + 「汽車はもう走っていない」を知っている
+    // KnowledgeEvent を1つの変更セットで提案する。
+    const entityId =
+      joined.match(/\[entity_id: ([0-9a-f-]{36})\] アキラ/)?.[1] ??
+      "unknown-entity";
+    const secretFactId =
+      joined.match(/\[fact_id: ([0-9a-f-]{36})\][^\n]*アキラは王の隠し子である/)
+        ?.[1] ?? "unknown-secret-fact";
+    const trainFactId =
+      joined.match(/\[fact_id: ([0-9a-f-]{36})\][^\n]*汽車はもう走っていない/)
+        ?.[1] ?? "unknown-train-fact";
+    return [
+      "アキラと秘密の正典を紐付け、アキラが「汽車はもう走っていない」ことを知っている記録を起票します。",
+      `<<CHANGESET {"title": "正典リンクと知識の記録", "description": "秘密の正典をアキラに紐付け、汽車の知識イベントを記録します", "ops": [{"op": "revise_fact", "fact_id": "${secretFactId}", "new_statement": "アキラは王の隠し子である", "entity_refs": ["${entityId}"]}, {"op": "add_knowledge_event", "entity_id": "${entityId}", "fact_id": "${trainFactId}", "source": "記述"}]}>>`,
+    ].join("\n");
+  }
+  if (userTurns === 2) {
+    return [
+      "登場人物アキラと舞台の廃都市を追加し、彼の秘密を正典として記録する変更セットを提案します。",
+      '<<CHANGESET {"title": "登場要素と秘密の追加", "description": "アキラ(主人公)・廃都市(場所)と秘密の正典を追加します", "ops": [{"op": "add_entity", "kind": "character", "name": "アキラ", "summary": "主人公。旅に出る少年", "aliases": ["暁"]}, {"op": "add_entity", "kind": "place", "name": "廃都市", "summary": "舞台の荒廃した都市", "aliases": []}, {"op": "add_fact", "statement": "アキラは王の隠し子である", "disclosure": "secret"}]}>>',
+    ].join("\n");
+  }
+  return [
+    "いいですね。その方向で前提を固めましょう。ジャンルと前提を整理しました。次に登場人物を教えてください。",
+    '<<CANON_FACTS ["汽車はもう走っていない"]>>',
+    '<<WORK_PATCH {"premise": "廃都市を出て行く少年の旅", "genre": "ファンタジー", "status": "active"}>>',
+  ].join("\n");
+}
+
 function intEnv(name: string, fallback: number): number {
   const v = process.env[name];
   if (!v) return fallback;
@@ -370,6 +448,9 @@ async function main(): Promise<void> {
   }
   if (process.env.STUB_SCENARIO === "phase2b") {
     providers["stub"] = new StubProvider({ respond: phase2bStubResponder });
+  }
+  if (process.env.STUB_SCENARIO === "entities") {
+    providers["stub"] = new StubProvider({ respond: entitiesStubResponder });
   }
 
   if (defaultProvider) {
