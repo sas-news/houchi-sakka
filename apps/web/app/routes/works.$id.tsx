@@ -797,12 +797,18 @@ function ChangesView({
   onForce,
   onToggleFinding,
   busy,
+  error,
+  onSelect,
 }: {
   changeSets: ChangeSetInfo[];
   onDecide: (id: string, action: "approve" | "reject") => void;
   onForce: (id: string) => void;
   onToggleFinding: (id: string, status: "open" | "dismissed") => void;
   busy: boolean;
+  /** 承認/却下の失敗理由 (適用前検査での保留メッセージなど)。 */
+  error: string | null;
+  /** 別の変更セットを選んだときに表示中のエラーを消す。 */
+  onSelect: () => void;
 }) {
   const sorted = useMemo(
     () => [...changeSets].sort((a, b) => b.created_at - a.created_at),
@@ -828,7 +834,10 @@ function ChangesView({
               key={c.id}
               type="button"
               className={`scene-item${c.id === selId ? " active" : ""}`}
-              onClick={() => setSelId(c.id)}
+              onClick={() => {
+                setSelId(c.id);
+                if (c.id !== selId) onSelect();
+              }}
             >
               {c.title}{" "}
               <span className={CS_STATUS_BADGE[c.status]}>
@@ -939,6 +948,38 @@ function ChangesView({
             </>
           ) : null}
 
+          {sel.pre_apply_check ? (
+            <>
+              <strong>適用前検査</strong>
+              <p className="muted">
+                {formatDateTime(sel.pre_apply_check.checked_at)} に実施
+                {sel.pre_apply_check.violations.length === 0 &&
+                sel.pre_apply_check.warnings.length === 0
+                  ? " — 問題は見つかりませんでした"
+                  : ""}
+              </p>
+              {sel.pre_apply_check.violations.length > 0 ? (
+                <ul className="findings">
+                  {sel.pre_apply_check.violations.map((v, i) => (
+                    <li key={`v-${i}`}>
+                      <span className="badge badge--warn">違反</span>{" "}
+                      {v.detail}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {sel.pre_apply_check.warnings.length > 0 ? (
+                <ul className="findings">
+                  {sel.pre_apply_check.warnings.map((w, i) => (
+                    <li key={`w-${i}`}>
+                      <span className="badge">警告</span> {w.detail}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          ) : null}
+
           {sel.findings.length > 0 ? (
             <>
               <strong>レビュー結果</strong>
@@ -976,6 +1017,8 @@ function ChangesView({
               </ul>
             </>
           ) : null}
+
+          {error ? <p className="error-text">{error}</p> : null}
 
           {sel.status === "proposed" ? (
             <div className="form-actions">
@@ -1808,6 +1851,8 @@ export default function WorkPage({
             onForce={(id) => void forceChangeSet(id)}
             onToggleFinding={(id, s) => void toggleFinding(id, s)}
             busy={sending || running}
+            error={error}
+            onSelect={() => setError(null)}
           />
         </section>
       ) : null}

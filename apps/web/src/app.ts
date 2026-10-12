@@ -37,6 +37,7 @@ import {
   WorkspaceWriteRequestSchema,
   type AgentJob,
   type ApiErrorCode,
+  type PreApplyCheck,
 } from "@houchi/contracts";
 import {
   buildPlanTree,
@@ -115,6 +116,7 @@ import {
   updateProposalStatus,
   updateSceneStatus,
   updateWorkConfig,
+  verifyChangeSetForApply,
   type DbLike,
 } from "@houchi/database";
 import { decrypt, encrypt, secretsEqual } from "@houchi/secrets";
@@ -1267,6 +1269,38 @@ export function createApp(deps: WebDeps): FetchHandler {
             );
           }
 
+          // 適用前検証 (spec §5.3 step 6-8): 通常承認の直前に同期検査を
+          // 実行し、違反があれば適用せず保留にする (force 適用は §5.4 の
+          // エスケープハッチとしてこの検査を迂回する)。警告だけなら適用し、
+          // 結果は応答と change_sets.pre_apply_check の両方に残す。
+          let preApplyCheck: PreApplyCheck | null = null;
+          if (!force) {
+            preApplyCheck = await verifyChangeSetForApply(db, {
+              changeSetId: cs.id,
+            });
+            if (preApplyCheck && preApplyCheck.violations.length > 0) {
+              const detail = preApplyCheck.violations
+                .map((v) => `・${v.detail}`)
+                .join("\n");
+              return json(
+                {
+                  error: {
+                    code: "conflict",
+                    message:
+                      `適用前の検査で ${preApplyCheck.violations.length} 件の問題が見つかったため、承認を保留しました。\n` +
+                      `${detail}\n` +
+                      (preApplyCheck.warnings.length > 0
+                        ? `あわせて警告 ${preApplyCheck.warnings.length} 件が「変更」タブに記録されています。`
+                        : "") +
+                      "提案を修正するか、「強制的に変更」で適用してください。",
+                  },
+                  pre_apply_check: preApplyCheck,
+                },
+                409,
+              );
+            }
+          }
+
           const applied = await applyChangeSet(db, {
             changeSetId: cs.id,
             force,
@@ -1289,6 +1323,13 @@ export function createApp(deps: WebDeps): FetchHandler {
                 `変更セット「${cs.title}」を適用しました${forceNote}。` +
                 (force ? `理由: ${reason}。` : "") +
                 `正典リビジョンは rev${applied.newCanonRev} です。` +
+                (preApplyCheck && preApplyCheck.warnings.length > 0
+                  ? `\n適用前検査で警告 ${preApplyCheck.warnings.length} 件:\n` +
+                    preApplyCheck.warnings
+                      .map((w) => `・${w.detail}`)
+                      .join("\n") +
+                    "\n"
+                  : "") +
                 (job
                   ? "影響するシーンのレビューを開始します。"
                   : "APIキー未登録のためレビューは起票されませんでした。"),
@@ -1297,6 +1338,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           return json({
             change_set: applied.changeSet,
             job: job ? publicJob(job) : null,
+            pre_apply_check: preApplyCheck,
           });
         }
 

@@ -34,9 +34,14 @@
 
 ## §5 変更セット / 検査フロー
 
-- **適用前検証 (verify-then-commit)**: 現状は「適用→canon_rev+1→review_change
+- ~~**適用前検証 (verify-then-commit)**: 現状は「適用→canon_rev+1→review_change
   で事後検査」。spec が想定する検証済み適用 (dry-run で影響確定してから
-  コミット) にはなっていない。目安: 中。
+  コミット) にはなっていない。目安: 中。~~
+  実装済み (devin/verify-before-apply): D1 単一ストアで一時ブランチが
+  作れないため、通常承認の直前に同期検証を実行する。検査は
+  影響再計算 (拡大は警告)・参照先の存在/現行性・rewrite_scene 本文への
+  契約の決定的検査。違反は 409 で保留、警告は応答と
+  `change_sets.pre_apply_check` に記録。force 適用は検査を迂回する。
 - ~~**下流修正の提案フロー**: review_change は findings を記録するだけ。
   「修正候補を作者に提示→承認で適用」の循環が無い。目安: 中。~~
   実装済み (devin/downstream-fix-loop): findings>0 のレビューは fixer スキルで

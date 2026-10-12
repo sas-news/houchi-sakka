@@ -51,6 +51,7 @@ const CHANGE_SET: ChangeSetWithFindings = {
   force_reason: null,
   base_rev: null,
   prev_settings: null,
+  pre_apply_check: null,
   findings: [],
   created_at: 0,
   decided_at: 1,

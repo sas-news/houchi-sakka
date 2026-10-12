@@ -10,6 +10,9 @@
     "paths": {
       "@houchi/contracts": [
         "../contracts/src/index.ts"
+      ],
+      "@houchi/validators": [
+        "../validators/src/index.ts"
       ]
     },
     "rootDir": "../.."
