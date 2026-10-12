@@ -3,6 +3,7 @@ import {
   JOB_KIND_GENERATE_SCENE,
   type AgentJob,
   type CanonFact,
+  type CanonFactInput,
   type DependencyEdgeInput,
   type ProviderRequest,
   type Scene,
@@ -111,7 +112,7 @@ function makeCtx(opts: {
   sceneCtx: SceneContextData;
   revisions: SceneRevision[];
   completed: unknown[];
-  canonFacts?: { statements: string[]; provenance: string }[];
+  canonFacts?: { statements: CanonFactInput[]; provenance: string }[];
   deps?: { sceneId: string; edges: DependencyEdgeInput[] }[];
 }) {
   const ctx: JobContext = {
@@ -169,6 +170,8 @@ function sceneCtx(contract: WritingContract | null): SceneContextData {
       id: "f1",
       work_id: "w1",
       statement: "汽車はもう走っていない",
+      commitment: "fixed",
+      disclosure: "normal",
       provenance: "orchestrator",
       valid_from_rev: 0,
       valid_to_rev: null,
@@ -211,7 +214,7 @@ describe("generate_scene 多段パイプライン", () => {
     const provider = new StubProvider({ respond: respond({ critic: CLEAN_CRITIC }) });
     const revisions: SceneRevision[] = [];
     const completed: unknown[] = [];
-    const canonFacts: { statements: string[]; provenance: string }[] = [];
+    const canonFacts: { statements: CanonFactInput[]; provenance: string }[] = [];
     const deps: { sceneId: string; edges: DependencyEdgeInput[] }[] = [];
     const ctx = makeCtx({
       provider,

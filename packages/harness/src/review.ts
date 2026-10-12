@@ -58,7 +58,7 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
   await ctx.postProgress("status", { step: "fetch_context" });
   const csCtx = await ctx.fetchChangeSetContext(payload.change_set_id);
   const cs = csCtx.change_set;
-  const canonStatements = csCtx.canon_facts.map((f) => f.statement);
+  // commitment/disclosure つきのまま渡す ([仮置き]/[秘密] ラベル化は skill 側)
   const targetScenes = csCtx.scenes
     .filter((s) => s.prose_md.length > 0)
     .slice(0, MAX_REVIEW_SCENES);
@@ -82,7 +82,7 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
         contract: scene.contract ?? EMPTY_CONTRACT,
         scene_title: scene.title,
         prose_md: scene.prose_md,
-        canon_facts: canonStatements,
+        canon_facts: csCtx.canon_facts,
       },
       model: payload.model,
       providerName: payload.provider,
@@ -184,6 +184,8 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
           canon_facts: csCtx.canon_facts.map((f) => ({
             id: f.id,
             statement: f.statement,
+            commitment: f.commitment,
+            disclosure: f.disclosure,
           })),
           findings: fixerFindings,
         },

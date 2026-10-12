@@ -9,7 +9,11 @@
 
 import { z } from "zod";
 import {
+  CommitmentLevelSchema,
+  DisclosurePolicySchema,
   WritingContractPayloadSchema,
+  type CommitmentLevel,
+  type DisclosurePolicy,
   type WritingContractPayload,
 } from "@houchi/contracts";
 
@@ -26,6 +30,8 @@ const MarkerKindSchema = z.enum(MARKER_KINDS);
 
 const CanonFactSeedSchema = z.object({
   statement: z.string().min(1),
+  commitment: CommitmentLevelSchema.optional(),
+  disclosure: DisclosurePolicySchema.optional(),
   provenance: z.string().default("orchestrator"),
 });
 export type CanonFactSeed = z.infer<typeof CanonFactSeedSchema>;
@@ -124,6 +130,8 @@ export function canonSeedsToFacts(
   id: string;
   work_id: string;
   statement: string;
+  commitment: CommitmentLevel;
+  disclosure: DisclosurePolicy;
   provenance: string;
   valid_from_rev: number | null;
   valid_to_rev: number | null;
@@ -133,6 +141,8 @@ export function canonSeedsToFacts(
     id: `eval-fact-${i + 1}`,
     work_id: workId,
     statement: s.statement,
+    commitment: s.commitment ?? "fixed",
+    disclosure: s.disclosure ?? "normal",
     provenance: s.provenance,
     valid_from_rev: null,
     valid_to_rev: null,

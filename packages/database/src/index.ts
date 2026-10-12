@@ -26,6 +26,7 @@ import {
   WritingContractSchema,
   type AgentJob,
   type CanonFact,
+  type CanonFactInput,
   type ChangeSet,
   type ChangeSetImpact,
   type ChangeSetOp,
@@ -790,6 +791,8 @@ function rowToCanonFact(r: Row): CanonFact {
     id: r.id,
     work_id: r.work_id,
     statement: r.statement,
+    commitment: r.commitment ?? "fixed",
+    disclosure: r.disclosure ?? "normal",
     provenance: r.provenance,
     valid_from_rev: r.valid_from_rev ?? null,
     valid_to_rev: r.valid_to_rev ?? null,
@@ -1039,16 +1042,27 @@ export async function updateContractStatus(
   return rows.length > 0 ? rowToContract(rows[0]!) : null;
 }
 
-/** 正典メモを追加。statement 完全一致は重複スキップして追加件数を返す。 */
+/**
+ * 正典メモを追加。statement 完全一致は重複スキップして追加件数を返す。
+ * statements は文字列 (commitment=fixed/disclosure=normal) か
+ * {statement, commitment?, disclosure?} (spec §4.3)。
+ */
 export async function addCanonFacts(
   db: DbLike,
-  input: { workId: string; statements: string[]; provenance: string },
+  input: {
+    workId: string;
+    statements: CanonFactInput[];
+    provenance: string;
+  },
 ): Promise<{ canonFacts: CanonFact[]; added: number }> {
   let added = 0;
-  for (const statement of input.statements) {
+  for (const item of input.statements) {
+    const entry = typeof item === "string" ? { statement: item } : item;
     const rows = (await db.all(sql`
-      INSERT INTO canon_facts (id, work_id, statement, provenance, created_at)
-      VALUES (${crypto.randomUUID()}, ${input.workId}, ${statement},
+      INSERT INTO canon_facts
+        (id, work_id, statement, commitment, disclosure, provenance, created_at)
+      VALUES (${crypto.randomUUID()}, ${input.workId}, ${entry.statement},
+              ${entry.commitment ?? "fixed"}, ${entry.disclosure ?? "normal"},
               ${input.provenance}, ${now()})
       ON CONFLICT DO NOTHING
       RETURNING *
@@ -1528,7 +1542,11 @@ export async function computeChangeSetImpact(
   };
 
   for (const op of input.ops) {
-    if (op.op === "retire_fact" || op.op === "revise_fact") {
+    if (
+      op.op === "retire_fact" ||
+      op.op === "revise_fact" ||
+      op.op === "set_fact_commitment"
+    ) {
       const fact = await getCanonFactById(db, op.fact_id);
       if (!fact) continue;
       // 依存宣言で繋がる scenes
@@ -1548,7 +1566,8 @@ export async function computeChangeSetImpact(
           }
         }
       }
-      // 文面が近い他の現行正典
+      // 文面が近い他の現行正典 (確度変更は文面を変えないので対象外)
+      if (op.op === "set_fact_commitment") continue;
       for (const other of currentFacts) {
         if (other.id === fact.id) continue;
         if (statementsMatch(other.statement, fact.statement)) {
@@ -1655,14 +1674,18 @@ async function insertCanonFactRev(
   input: {
     workId: string;
     statement: string;
+    commitment: string;
+    disclosure: string;
     provenance: string;
     validFromRev: number;
   },
 ): Promise<void> {
   await db.all(sql`
     INSERT INTO canon_facts
-      (id, work_id, statement, provenance, valid_from_rev, valid_to_rev, created_at)
+      (id, work_id, statement, commitment, disclosure, provenance,
+       valid_from_rev, valid_to_rev, created_at)
     VALUES (${crypto.randomUUID()}, ${input.workId}, ${input.statement},
+            ${input.commitment}, ${input.disclosure},
             ${input.provenance}, ${input.validFromRev}, NULL, ${now()})
     ON CONFLICT DO NOTHING
     RETURNING id
@@ -1717,6 +1740,7 @@ export async function applyChangeSet(
     if (op.op === "retire_fact") {
       await closeCanonFact(db, { factId: op.fact_id, validToRev: newRev });
     } else if (op.op === "revise_fact") {
+      const old = await getCanonFactById(db, op.fact_id);
       const closed = await closeCanonFact(db, {
         factId: op.fact_id,
         validToRev: newRev,
@@ -1725,6 +1749,9 @@ export async function applyChangeSet(
         await insertCanonFactRev(db, {
           workId: cs.work_id,
           statement: op.new_statement,
+          // commitment/disclosure もリビジョンの一部: 指定がなければ旧行を引き継ぐ
+          commitment: op.commitment ?? old?.commitment ?? "fixed",
+          disclosure: op.disclosure ?? old?.disclosure ?? "normal",
           provenance,
           validFromRev: newRev,
         });
@@ -1733,9 +1760,28 @@ export async function applyChangeSet(
       await insertCanonFactRev(db, {
         workId: cs.work_id,
         statement: op.statement,
+        commitment: op.commitment ?? "fixed",
+        disclosure: op.disclosure ?? "normal",
         provenance,
         validFromRev: newRev,
       });
+    } else if (op.op === "set_fact_commitment") {
+      // 確度/開示の変更もリビジョンとして記録する (旧行を閉じて新行を挿入)
+      const old = await getCanonFactById(db, op.fact_id);
+      const closed = await closeCanonFact(db, {
+        factId: op.fact_id,
+        validToRev: newRev,
+      });
+      if (closed && old) {
+        await insertCanonFactRev(db, {
+          workId: cs.work_id,
+          statement: old.statement,
+          commitment: op.commitment,
+          disclosure: op.disclosure ?? old.disclosure,
+          provenance,
+          validFromRev: newRev,
+        });
+      }
     } else if (op.op === "update_work") {
       const p = op.patch;
       await patchWork(db, {

@@ -612,11 +612,76 @@ export const WritingContractSchema = z.object({
 });
 export type WritingContract = z.infer<typeof WritingContractSchema>;
 
+/**
+ * コミットメント状態 (spec §4.3): 正典メモの確度。
+ * - fixed: 確定した正典。変更は影響分析つきの変更セット経由
+ * - committed: 近い将来の計画として約束済み
+ * - provisional: 候補・仮説。正典の事実として本文に利用してはならない
+ * - open_by_design: 意図的に未確定 (執筆をブロックしない)
+ * - undecided: まだ判断していない
+ */
+export const COMMITMENT_LEVELS = [
+  "fixed",
+  "committed",
+  "provisional",
+  "open_by_design",
+  "undecided",
+] as const;
+export const CommitmentLevelSchema = z.enum(COMMITMENT_LEVELS);
+export type CommitmentLevel = z.infer<typeof CommitmentLevelSchema>;
+
+/**
+ * 開示ポリシー (spec §4.3 Secret/Reveal-constrained)。
+ * secret = 読者にも未登場人物にも知られたくない事実
+ * (reveal 制約の詳細条件は後フェーズ)。
+ */
+export const DISCLOSURE_POLICIES = ["normal", "secret"] as const;
+export const DisclosurePolicySchema = z.enum(DISCLOSURE_POLICIES);
+export type DisclosurePolicy = z.infer<typeof DisclosurePolicySchema>;
+
+/** コミットメント状態の日本語ラベル (UI・プロンプト・workspace で共通)。 */
+export const COMMITMENT_LABELS: Record<CommitmentLevel, string> = {
+  fixed: "確定",
+  committed: "約束済み",
+  provisional: "仮置き",
+  open_by_design: "意図的未確定",
+  undecided: "未判断",
+};
+
+/** 開示ポリシーの日本語ラベル。 */
+export const DISCLOSURE_LABELS: Record<DisclosurePolicy, string> = {
+  normal: "通常",
+  secret: "秘密",
+};
+
+/**
+ * プロンプトや /canon/facts.md に付ける先頭ラベル (例: "[秘密・仮置き] ")。
+ * fixed + normal はラベルなし (既定の正典は無印)。
+ */
+export function canonFactLabel(fact: {
+  commitment?: string | null | undefined;
+  disclosure?: string | null | undefined;
+}): string {
+  const tags: string[] = [];
+  if (fact.disclosure === "secret") tags.push(DISCLOSURE_LABELS.secret);
+  if (fact.commitment && fact.commitment !== "fixed") {
+    const label =
+      COMMITMENT_LABELS[fact.commitment as CommitmentLevel] ??
+      fact.commitment;
+    tags.push(label);
+  }
+  return tags.length > 0 ? `[${tags.join("・")}] ` : "";
+}
+
 /** 正典メモ (Phase 1b の最小版: 自然言語文 + 出所のみ, spec §6.4)。 */
 export const CanonFactSchema = z.object({
   id: z.string(),
   work_id: z.string(),
   statement: z.string(),
+  /** コミットメント状態 (spec §4.3。未設定の既存行は fixed 扱い)。 */
+  commitment: CommitmentLevelSchema.default("fixed"),
+  /** 開示ポリシー (spec §4.3)。 */
+  disclosure: DisclosurePolicySchema.default("normal"),
   /** 出所 (例: "orchestrator", "author", "change_set:<id>")。 */
   provenance: z.string(),
   /** この行が現行になった正典リビジョン (spec §6.3。無バージョン追加は null)。 */
@@ -906,9 +971,22 @@ export const ProposalResponseSchema = z.object({
 });
 export type ProposalResponse = z.infer<typeof ProposalResponseSchema>;
 
+/**
+ * 正典メモの追加入力 1 件。文字列だけなら commitment=fixed/disclosure=normal。
+ */
+export const CanonFactInputSchema = z.union([
+  z.string().min(1),
+  z.object({
+    statement: z.string().min(1),
+    commitment: CommitmentLevelSchema.optional(),
+    disclosure: DisclosurePolicySchema.optional(),
+  }),
+]);
+export type CanonFactInput = z.infer<typeof CanonFactInputSchema>;
+
 /** POST /api/internal/works/:id/canon-facts — 正典メモ追加 (完全一致は重複スキップ)。 */
 export const AddCanonFactsRequestSchema = z.object({
-  statements: z.array(z.string().min(1)).min(1).max(50),
+  statements: z.array(CanonFactInputSchema).min(1).max(50),
   provenance: z.string().min(1),
 });
 export type AddCanonFactsRequest = z.infer<typeof AddCanonFactsRequestSchema>;
@@ -1123,10 +1201,25 @@ export const ChangeSetOpSchema = z.discriminatedUnion("op", [
     op: z.literal("revise_fact"),
     fact_id: z.string().min(1),
     new_statement: z.string().min(1).max(20000),
+    /** 省略時は旧行の値を引き継ぐ (commitment/disclosure もリビジョンの一部)。 */
+    commitment: CommitmentLevelSchema.optional(),
+    disclosure: DisclosurePolicySchema.optional(),
   }),
   z.object({
     op: z.literal("add_fact"),
     statement: z.string().min(1).max(20000),
+    commitment: CommitmentLevelSchema.optional(),
+    disclosure: DisclosurePolicySchema.optional(),
+  }),
+  /**
+   * 正典メモのコミットメント状態だけを変更する (spec §4.3)。
+   * statement は変えず、確度/開示の更新を新リビジョンとして記録する。
+   */
+  z.object({
+    op: z.literal("set_fact_commitment"),
+    fact_id: z.string().min(1),
+    commitment: CommitmentLevelSchema,
+    disclosure: DisclosurePolicySchema.optional(),
   }),
   z.object({
     op: z.literal("update_work"),

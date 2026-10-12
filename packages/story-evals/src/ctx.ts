@@ -9,6 +9,7 @@
 import {
   type AgentJob,
   type CanonFact,
+  type CanonFactInput,
   type ChangeSetOp,
   type ChangeSetWithFindings,
   type ChatMessage,
@@ -225,24 +226,28 @@ export function makeEvalCtx(args: {
     },
     addCanonFacts: async (req: {
       work_id: string;
-      statements: string[];
+      statements: CanonFactInput[];
       provenance: string;
     }) => {
       let added = 0;
-      for (const statement of req.statements) {
+      for (const item of req.statements) {
+        const entry = typeof item === "string" ? { statement: item } : item;
         // サーバー側の完全一致重複スキップを再現。
-        if (world.canon_facts.some((f) => f.statement === statement)) continue;
+        if (world.canon_facts.some((f) => f.statement === entry.statement))
+          continue;
         world.canon_facts.push({
           id: nextId("eval-fact"),
           work_id: req.work_id,
-          statement,
+          statement: entry.statement,
+          commitment: entry.commitment ?? "fixed",
+          disclosure: entry.disclosure ?? "normal",
           provenance: req.provenance,
           valid_from_rev: null,
           valid_to_rev: null,
           created_at: world.canon_facts.length,
         });
         added += 1;
-        effects.canon_added.push(statement);
+        effects.canon_added.push(entry.statement);
       }
       return { added };
     },

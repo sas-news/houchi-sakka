@@ -16,6 +16,7 @@ import { api, ApiError } from "../lib/api";
 import { diffParagraphs } from "../lib/diff";
 import { getWorkDetail, requireUser } from "../lib/server";
 import type {
+  CanonFactInfo,
   ChangeSetInfo,
   ChangeSetOp,
   JobInfo,
@@ -98,8 +99,31 @@ const OP_LABEL: Record<ChangeSetOp["op"], string> = {
   retire_fact: "正典の廃止",
   revise_fact: "正典の書き換え",
   add_fact: "正典の追加",
+  set_fact_commitment: "正典の確度変更",
   update_work: "作品情報の更新",
   rewrite_scene: "本文の書き換え",
+};
+
+/** コミットメント状態 (spec §4.3) のバッジ表示。 */
+const COMMITMENT_LABEL: Record<CanonFactInfo["commitment"], string> = {
+  fixed: "確定",
+  committed: "約束済み",
+  provisional: "仮置き",
+  open_by_design: "意図的未確定",
+  undecided: "未判断",
+};
+
+const COMMITMENT_BADGE: Record<CanonFactInfo["commitment"], string> = {
+  fixed: "badge",
+  committed: "badge badge--ok",
+  provisional: "badge badge--warn",
+  open_by_design: "badge badge--accent",
+  undecided: "badge badge--warn",
+};
+
+const DISCLOSURE_LABEL: Record<CanonFactInfo["disclosure"], string> = {
+  normal: "通常",
+  secret: "秘密",
 };
 
 const JOB_KIND_LABEL: Record<string, string> = {
@@ -159,14 +183,28 @@ function formatDateTime(ts: number): string {
   });
 }
 
+/** op が持つ commitment/disclosure の併記 (変更セットカード用)。 */
+function opMetaText(op: ChangeSetOp): string {
+  const parts: string[] = [];
+  if (op.commitment !== undefined) {
+    parts.push(`確度: ${COMMITMENT_LABEL[op.commitment] ?? op.commitment}`);
+  }
+  if (op.disclosure !== undefined) {
+    parts.push(`秘密区分: ${DISCLOSURE_LABEL[op.disclosure] ?? op.disclosure}`);
+  }
+  return parts.length > 0 ? ` (${parts.join(" / ")})` : "";
+}
+
 function opText(op: ChangeSetOp): string {
   switch (op.op) {
     case "retire_fact":
       return "正典を廃止する";
     case "revise_fact":
-      return `正典を「${op.new_statement ?? ""}」に書き換える`;
+      return `正典を「${op.new_statement ?? ""}」に書き換える${opMetaText(op)}`;
     case "add_fact":
-      return `正典に「${op.statement ?? ""}」を追加する`;
+      return `正典に「${op.statement ?? ""}」を追加する${opMetaText(op)}`;
+    case "set_fact_commitment":
+      return `正典の確度・秘密区分を変更する${opMetaText(op)}`;
     case "update_work": {
       const keys = Object.entries(op.patch ?? {}).map(([k]) => k);
       return `作品情報を更新する (${keys.join(", ")})`;
@@ -1749,7 +1787,21 @@ export default function WorkPage({
                   <strong>正典</strong>
                   <ul>
                     {prose.canon_facts.map((f) => (
-                      <li key={f.id}>{f.statement}</li>
+                      <li key={f.id}>
+                        <span
+                          className={
+                            COMMITMENT_BADGE[f.commitment] ?? "badge"
+                          }
+                        >
+                          {COMMITMENT_LABEL[f.commitment] ?? f.commitment}
+                        </span>{" "}
+                        {f.disclosure === "secret" ? (
+                          <>
+                            <span className="badge badge--warn">秘密</span>{" "}
+                          </>
+                        ) : null}
+                        {f.statement}
+                      </li>
                     ))}
                   </ul>
                 </div>

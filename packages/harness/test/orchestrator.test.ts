@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   AgentJob,
+  CanonFactInput,
   ChatMessage,
   ChatRole,
   ProgressEventType,
@@ -73,7 +74,7 @@ function makeCtx(opts: {
   persisted: ChatMessage[];
   patches: { workId: string; patch: Record<string, unknown> }[];
   proposals?: { payload: Record<string, unknown> }[];
-  canonFacts?: { statements: string[]; provenance: string }[];
+  canonFacts?: { statements: CanonFactInput[]; provenance: string }[];
   completeFailures?: number;
 }) {
   const calls: Call[] = [];

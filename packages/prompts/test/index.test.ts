@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOrchestratorInput,
+  parseOrchestratorMarkers,
   parseWorkPatch,
 } from "../src/index.js";
 
@@ -79,5 +80,73 @@ describe("buildOrchestratorInput", () => {
     expect(input[1]!.content).toContain("タイトル");
     expect(input[2]!.role).toBe("user");
     expect(input[3]!.role).toBe("assistant");
+  });
+});
+
+describe("spec 4.3: コミットメント状態", () => {
+  it("CANON_FACTS マーカーは commitment/disclosure 付きオブジェクトを受け付ける", () => {
+    const r = parseOrchestratorMarkers(
+      '了解です。\n<<CANON_FACTS ["汽車はもう走っていない", {"statement": "黒服は機械かも", "commitment": "provisional"}, {"statement": "駅長は裏切り者", "disclosure": "secret"}]>>',
+    );
+    expect(r.canonFacts).toEqual([
+      "汽車はもう走っていない",
+      { statement: "黒服は機械かも", commitment: "provisional" },
+      { statement: "駅長は裏切り者", disclosure: "secret" },
+    ]);
+    expect(r.cleanText).toBe("了解です。");
+  });
+
+  it("CHANGESET マーカーは set_fact_commitment と確度付き add/revise を受理する", () => {
+    const r = parseOrchestratorMarkers(
+      '変更します。\n<<CHANGESET {"title":"確度整理","description":"","ops":[{"op":"set_fact_commitment","fact_id":"f1","commitment":"provisional"},{"op":"add_fact","statement":"線路の先は海","commitment":"committed"},{"op":"revise_fact","fact_id":"f2","new_statement":"汽車は走らない","disclosure":"secret"}]}>>',
+    );
+    expect(r.changeSet).not.toBeNull();
+    expect(r.changeSet!.ops).toHaveLength(3);
+    expect(r.changeSet!.ops[0]).toMatchObject({
+      op: "set_fact_commitment",
+      fact_id: "f1",
+      commitment: "provisional",
+    });
+    expect(r.changeSet!.ops[1]).toMatchObject({
+      op: "add_fact",
+      commitment: "committed",
+    });
+    expect(r.changeSet!.ops[2]).toMatchObject({
+      op: "revise_fact",
+      disclosure: "secret",
+    });
+  });
+
+  it("buildOrchestratorInput は確度・秘密のラベルを正典に付けて渡す", () => {
+    const input = buildOrchestratorInput({
+      work: {
+        id: "w1",
+        owner_ref: "u1",
+        title: "タイトル",
+        premise: "前提",
+        genre: "",
+        status: "setup" as const,
+        charter: null,
+        policy: null,
+        provider: null,
+        model: null,
+        key_ref: null,
+        canon_rev: 0,
+        created_at: 0,
+        updated_at: 0,
+      },
+      messages: [],
+      canonFacts: [
+        { id: "f1", statement: "汽車はもう走っていない" },
+        { id: "f2", statement: "黒服は機械かも", commitment: "provisional" },
+        { id: "f3", statement: "駅長は裏切り者", disclosure: "secret" },
+        { id: "f4", statement: "町の名前", commitment: "undecided" },
+      ],
+    });
+    const ctx = input[1]!.content;
+    expect(ctx).toContain("[fact_id: f1] 汽車はもう走っていない");
+    expect(ctx).toContain("[fact_id: f2] [仮置き] 黒服は機械かも");
+    expect(ctx).toContain("[fact_id: f3] [秘密] 駅長は裏切り者");
+    expect(ctx).toContain("[fact_id: f4] [未判断] 町の名前");
   });
 });

@@ -43,7 +43,8 @@ export const runPlanWork: JobHandler = async (job, ctx) => {
           policy: threadCtx.work.policy,
         },
         plan_tree: threadCtx.plan_tree,
-        canon_facts: threadCtx.canon_facts.map((f) => f.statement),
+        // commitment/disclosure つきのまま渡す ([仮置き] 等のラベル化は skill 側)
+        canon_facts: threadCtx.canon_facts,
         ...(payload.guidance !== undefined
           ? { guidance: payload.guidance }
           : {}),

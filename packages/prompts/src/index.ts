@@ -1,8 +1,11 @@
 import { z } from "zod";
 import {
+  canonFactLabel,
+  CanonFactInputSchema,
   ChangeSetOpSchema,
   ProposeScenePayloadSchema,
   WorkPatchRequestSchema,
+  type CanonFactInput,
   type ChangeSetOp,
   type ChatMessage,
   type ProviderInputMessage,
@@ -30,12 +33,12 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 - 作者が曖昧な表現を使った場合、重要な意味を勝手に確定しない。
 - 過去の決定と矛盾する希望が来た場合、黙って上書きせず、どの決定が変わるかを説明する。
 - 作品の体裁(タイトル・前提・ジャンル)が対話で固まったと判断したときだけ、下記の WORK_PATCH 行で更新を提案する。
-- 対話から得られた創作上の確定事項(設定・キャラ・世界観など)は CANON_FACTS 行で正典メモとして記録する。
-- 記録済みの正典や作品の設定を変えたい・廃止したい場合、勝手に書き換えず CHANGESET 行で変更セットを提案する。既存の正典メモを直す時は必ずこちらを使う (CANON_FACTS は新規追加専用)。
+- 対話から得られた創作上の確定事項(設定・キャラ・世界観など)は CANON_FACTS 行で正典メモとして記録する。確度(コミットメント状態)を付けられる: "fixed"(確定・既定)/"committed"(約束済みの計画)/"provisional"(仮置き・本文では確定事項として使えない)/"open_by_design"(意図的な未確定)/"undecided"(未判断)。作者が「仮置きして」「未定だけど」などと言った事項は provisional で提案する。確度を付けるときは {"statement": "…", "commitment": "provisional"} の形で出す (確定の事項は文字列だけでよい)。読者にも未登場人物にも知られたくない事実は {"statement": "…", "disclosure": "secret"} で記録する。
+- 記録済みの正典や作品の設定を変えたい・廃止したい場合、勝手に書き換えず CHANGESET 行で変更セットを提案する。既存の正典メモを直す時は必ずこちらを使う (CANON_FACTS は新規追加専用)。確度だけを変えるときは set_fact_commitment を使う。
 
 変更の提案 (CHANGESET):
 - 変更セットは作者の承認後にだけ適用される。影響しそうなシーン・契約は影響分析で示されるので、提案文には「何をなぜ変えるか」を書く。
-- ops の語彙: {"op": "retire_fact", "fact_id": "…"} (正典を廃止) / {"op": "revise_fact", "fact_id": "…", "new_statement": "…"} (正典を書き換え) / {"op": "add_fact", "statement": "…"} (正典を追加) / {"op": "update_work", "patch": {"title"?: "…", "premise"?: "…", "genre"?: "…", "charter"?: {…}, "policy"?: {…}}} (作品の構造情報を変更)。
+- ops の語彙: {"op": "retire_fact", "fact_id": "…"} (正典を廃止) / {"op": "revise_fact", "fact_id": "…", "new_statement": "…", "commitment"?: "…", "disclosure"?: "…"} (正典を書き換え) / {"op": "add_fact", "statement": "…", "commitment"?: "…", "disclosure"?: "…"} (正典を追加) / {"op": "set_fact_commitment", "fact_id": "…", "commitment": "…", "disclosure"?: "…"} (確度や秘密区分だけを変更) / {"op": "update_work", "patch": {"title"?: "…", "premise"?: "…", "genre"?: "…", "charter"?: {…}, "policy"?: {…}}} (作品の構造情報を変更)。
 - fact_id は「記録済みの正典メモ」に [fact_id: …] で示されるものを使う。
 
 本文生成の提案 (PROPOSE):
@@ -52,12 +55,12 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 
 出力形式: 返答は日本語のプレーンテキスト。マーカー行は返答の末尾にだけ書く(各行1行ずつ、順不同・必要なものだけ):
 <<WORK_PATCH {"title": "…", "premise": "…", "genre": "…", "status": "active"}>>
-<<CANON_FACTS ["確定した設定や決定事項", "…"]>>
+<<CANON_FACTS ["確定した設定や決定事項", {"statement": "仮置きの案", "commitment": "provisional"}, {"statement": "秘密の事実", "disclosure": "secret"}]>>
 <<PROPOSE {"episode_title": "第1話", "scene_title": "…", "scene_purpose": "…", "contract": {"role": "…", "pov": "…", "required_events": ["…"], "forbidden": ["…"], "knowledge_notes": "…", "connections": "…"}}>>
 <<RUN_PLAN {"guidance": "…"}>>
 <<CHANGESET {"title": "…", "description": "…", "ops": [{"op": "revise_fact", "fact_id": "…", "new_statement": "…"}]}>>
 - WORK_PATCH: 更新しないフィールドは省略。更新がなければ行自体を出さない。status には "setup" または "active" だけが使える。
-- CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。
+- CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。仮置き・未定の事項は commitment="provisional"、秘密事項は disclosure="secret" を付ける。
 - PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。
 - RUN_PLAN: 引数は省略可。計画したいときだけ出す。
 - CHANGESET: 既存の正典・作品設定の変更を提案するときだけ出す。description は省略可。`;
@@ -97,7 +100,12 @@ export function buildOrchestratorInput(input: {
   work: Work;
   messages: ChatMessage[];
   /** 正典メモ (fact_id つき。CHANGESET の ops が参照する)。 */
-  canonFacts?: { id: string; statement: string }[];
+  canonFacts?: {
+    id: string;
+    statement: string;
+    commitment?: string | undefined;
+    disclosure?: string | undefined;
+  }[];
   pendingProposals?: string[];
   /** workspace のファイル一覧 (一覧+要約のみ。中身は載せない)。 */
   workspaceFiles?: { path: string; summary: string }[];
@@ -118,7 +126,9 @@ export function buildOrchestratorInput(input: {
   if (input.canonFacts && input.canonFacts.length > 0) {
     lines.push(
       "記録済みの正典メモ:",
-      ...input.canonFacts.map((f) => `- [fact_id: ${f.id}] ${f.statement}`),
+      ...input.canonFacts.map(
+        (f) => `- [fact_id: ${f.id}] ${canonFactLabel(f)}${f.statement}`,
+      ),
     );
   }
   if (input.pendingProposals && input.pendingProposals.length > 0) {
@@ -187,7 +197,7 @@ export function parseOrchestratorMarkers(text: string): {
   cleanText: string;
   patch: WorkPatchRequest | null;
   proposal: ProposeMarker | null;
-  canonFacts: string[];
+  canonFacts: CanonFactInput[];
   runPlan: RunPlanMarker | null;
   changeSet: {
     title: string;
@@ -199,7 +209,7 @@ export function parseOrchestratorMarkers(text: string): {
   let end = lines.length;
   const patches: WorkPatchRequest[] = [];
   const proposals: ProposeMarker[] = [];
-  const factLists: string[][] = [];
+  const factLists: CanonFactInput[][] = [];
   let runPlan: RunPlanMarker | null = null;
   const changeSets: ChangeSetMarker[] = [];
 
@@ -241,7 +251,7 @@ export function parseOrchestratorMarkers(text: string): {
     if (canonMatch) {
       try {
         const raw = JSON.parse(canonMatch[1]!);
-        const arr = z.array(z.string()).parse(raw);
+        const arr = z.array(CanonFactInputSchema).parse(raw);
         factLists.unshift(arr);
         end = i;
         continue;
