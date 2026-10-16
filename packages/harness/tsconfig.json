@@ -8,6 +8,7 @@
   },
   "references": [
     { "path": "../contracts" },
+    { "path": "../mentions" },
     { "path": "../prompts" },
     { "path": "../providers" },
     { "path": "../skills" },
