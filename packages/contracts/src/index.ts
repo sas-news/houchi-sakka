@@ -1017,9 +1017,9 @@ export type WorkDetailResponse = z.infer<typeof WorkDetailResponseSchema>;
 /** POST /api/works/:id/messages — 送信→orchestrator_turn をキュー。 */
 export const CreateMessageRequestSchema = z.object({
   content: z.string().min(1).max(20000),
-  /** 使うキー (省略時はユーザーの最新キー)。 */
+  /** 使うキー (省略時は作品設定→ユーザーの最新キー)。 */
   key_id: z.string().optional(),
-  /** モデル名 (省略時はサーバー既定)。 */
+  /** モデル名 (省略時は作品設定→プロバイダー既定)。 */
   model: z.string().optional(),
 });
 export type CreateMessageRequest = z.infer<typeof CreateMessageRequestSchema>;

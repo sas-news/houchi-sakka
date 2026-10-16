@@ -210,6 +210,19 @@ const DEV_USER_PASSWORD = "dev-login-password";
 export function createApp(deps: WebDeps): FetchHandler {
   const { db, secretKey, executorToken, auth } = deps;
 
+  /**
+   * プロバイダー別の既定モデル。model 未指定時のフォールバックに使う
+   * (env DEFAULT_MODEL は OpenAI 向け既定なので他社キーには合わない)。
+   */
+  const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
+    gemini: "gemini-2.5-flash",
+    anthropic: "claude-haiku-4-5",
+    openrouter: "meta-llama/llama-3.3-70b-instruct:free",
+    groq: "llama-3.3-70b-versatile",
+  };
+  const defaultModelFor = (provider: string | null | undefined): string =>
+    (provider && PROVIDER_DEFAULT_MODEL[provider]) || deps.defaultModel;
+
   const authorizedExecutor = async (req: Request): Promise<boolean> => {
     const h = req.headers.get("authorization");
     if (!h?.startsWith("Bearer ")) return false;
@@ -253,7 +266,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         user_ref: input.work.owner_ref,
         key_ref: key.id,
         provider: key.provider,
-        model: input.work.model ?? deps.defaultModel,
+        model: input.work.model ?? defaultModelFor(key.provider),
         ...(input.instruction !== undefined
           ? { instruction: input.instruction }
           : {}),
@@ -296,7 +309,7 @@ export function createApp(deps: WebDeps): FetchHandler {
         user_ref: input.work.owner_ref,
         key_ref: key.id,
         provider: key.provider,
-        model: input.work.model ?? deps.defaultModel,
+        model: input.work.model ?? defaultModelFor(key.provider),
       },
       idempotencyKey: `review_change:${input.changeSetId}`,
     });
@@ -454,7 +467,7 @@ export function createApp(deps: WebDeps): FetchHandler {
             ownerRef: user.id,
             title: body.title,
             ...(body.premise !== undefined ? { premise: body.premise } : {}),
-            model: deps.defaultModel,
+            model: defaultModelFor(defaultKey?.provider),
             ...(defaultKey
               ? { provider: defaultKey.provider, keyRef: defaultKey.id }
               : {}),
@@ -525,8 +538,15 @@ export function createApp(deps: WebDeps): FetchHandler {
               return err(400, "bad_request", "指定したキーが見つかりません");
             }
           } else {
-            const keys = await listKeysByOwner(db, user.id);
-            key = keys.at(-1);
+            // 作品設定のキーを優先し、無効/未設定ならユーザーの最新キー
+            // (generate_scene / review_change と同じ解決順)。
+            const workKey = work.key_ref
+              ? await getKeyById(db, work.key_ref)
+              : null;
+            key =
+              workKey && workKey.owner_ref === user.id
+                ? workKey
+                : (await listKeysByOwner(db, user.id)).at(-1);
           }
           if (!key) {
             return err(
@@ -555,7 +575,8 @@ export function createApp(deps: WebDeps): FetchHandler {
               user_ref: user.id,
               key_ref: key.id,
               provider: key.provider,
-              model: body.model ?? deps.defaultModel,
+              model:
+                body.model ?? work.model ?? defaultModelFor(key.provider),
               trigger_message_id: message.id,
             },
             // 同一メッセージからの重複ジョブを抑止
@@ -647,7 +668,7 @@ export function createApp(deps: WebDeps): FetchHandler {
               model:
                 typeof oldJob.payload.model === "string"
                   ? oldJob.payload.model
-                  : deps.defaultModel,
+                  : defaultModelFor(key.provider),
               trigger_message_id: message.id,
               resend_of: oldJob.id,
             },
@@ -827,7 +848,14 @@ export function createApp(deps: WebDeps): FetchHandler {
             id: work.id,
             ...(keyRef !== undefined ? { keyRef } : {}),
             ...(provider !== undefined ? { provider } : {}),
-            ...(body.model !== undefined ? { model: body.model } : {}),
+            // キー切替でプロバイダーが変わり model 指定が無い時は
+            // 旧モデル名 (例 gpt-4o-mini) が新プロバイダーでは404になるため
+            // プロバイダー既定に合わせる。
+            ...(body.model !== undefined
+              ? { model: body.model }
+              : provider != null && provider !== work.provider
+                ? { model: defaultModelFor(provider) }
+                : {}),
           });
           return json({ work: updated });
         }

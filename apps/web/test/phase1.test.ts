@@ -215,6 +215,71 @@ describe("作品 + 対話", () => {
     expect(d.active_job?.job.id).toBe(body.job.id);
   });
 
+  it("gemini キーの作品は既定モデルが gemini-2.5-flash になる", async () => {
+    const cookie = await devLogin(call);
+    await call(
+      "POST",
+      "/api/keys",
+      { provider: "gemini", label: "g", api_key: "AIza-x" },
+      { token: null, cookie },
+    );
+    const work = await makeWork(cookie);
+
+    const res = await call(
+      "POST",
+      `/api/works/${work.id}/messages`,
+      { content: "テスト" },
+      { token: null, cookie },
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      job: { payload: { provider?: string; model?: string } };
+    };
+    expect(body.job.payload.provider).toBe("gemini");
+    expect(body.job.payload.model).toBe("gemini-2.5-flash");
+  });
+
+  it("対話送信は作品設定のキー/モデルを使う (最新キー・既定モデルに流れない)", async () => {
+    const cookie = await devLogin(call);
+    await call(
+      "POST",
+      "/api/keys",
+      { provider: "openai", label: "o", api_key: "sk-o" },
+      { token: null, cookie },
+    );
+    const work = await makeWork(cookie);
+    // gemini キーを後から追加して作品に差し替える (model 未指定 → プロバイダー既定に自動変更)
+    const kres = await call(
+      "POST",
+      "/api/keys",
+      { provider: "gemini", label: "g", api_key: "AIza-x" },
+      { token: null, cookie },
+    );
+    const { key: gkey } = (await kres.json()) as { key: { id: string } };
+    const set = await call(
+      "PATCH",
+      `/api/works/${work.id}/settings`,
+      { key_id: gkey.id },
+      { token: null, cookie },
+    );
+    expect(set.status).toBe(200);
+
+    const res = await call(
+      "POST",
+      `/api/works/${work.id}/messages`,
+      { content: "テスト" },
+      { token: null, cookie },
+    );
+    const body = (await res.json()) as {
+      job: {
+        payload: { provider?: string; model?: string; key_ref?: string };
+      };
+    };
+    expect(body.job.payload.provider).toBe("gemini");
+    expect(body.job.payload.key_ref).toBe(gkey.id);
+    expect(body.job.payload.model).toBe("gemini-2.5-flash");
+  });
+
   it("他人の作品には送信できない", async () => {
     const alice = await signUp(call, "a@example.com");
     const bob = await signUp(call, "b@example.com");
