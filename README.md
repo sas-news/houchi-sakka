@@ -243,6 +243,8 @@ fly deploy                                 # リポジトリルートで実行 (
 - `WEB_BASE_URL` … Workers の公開 URL。`EXECUTOR_TOKEN` … web 側と同じ共有トークン。
 - **`RUNNER_PROVIDER` は設定しない** (=openai。実キーはユーザーがサイトに登録した BYO キーを DB 経由で resolve する。`stub` は実キーなしで全ジョブをダミー応答で回すスモーク用)。
 - 動作確認は `fly logs` / `fly status`。1台動かせばよい (同一 work_ref のジョブは直列化されるので複数台でも安全だが不要)。
+- **Fly.io の無料トライアルは Machine を約5分で強制停止する** (`Trial machine stopping`)。常駐運用するには https://fly.io/trial から支払い方法の登録が必要 (shared-cpu-1x/256MB で月数ドル)。登録しない場合はローカル常駐を使う。
+- **ローカル常駐 (無料)**: リポジトリルートに `.env` (`WEB_BASE_URL`, `EXECUTOR_TOKEN` など。`.env.example` 参照) を置き、`node apps/runner/dist/cli.js` を systemd --user サービス等で起動すればよい。runner はポーリング型で内向き接続が不要なためデスクトップでも動く。
 - Fly.io 以外 (Render / 自分の VPS 等) でも、リポジトリルートで `docker build -f apps/runner/Dockerfile -t houchi-sakka-runner .` → `docker run -d --restart=always -e WEB_BASE_URL=... -e EXECUTOR_TOKEN=... houchi-sakka-runner` で同じように動く。
 
 ### 6. OAuth アプリの設定 (Google / GitHub ログインを使う場合)
