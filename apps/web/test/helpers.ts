@@ -6,13 +6,19 @@ export const SECRET_KEY = btoa("0123456789abcdef0123456789abcdef");
 export const TOKEN = "test-executor-token";
 export const BASE_URL = "http://localhost";
 
-export function makeApp(opts: { devLogin?: boolean } = {}) {
+export function makeApp(
+  opts: {
+    devLogin?: boolean;
+    github?: { clientId: string; clientSecret: string };
+  } = {},
+) {
   const db = createTestDb();
   const devLoginEnabled = opts.devLogin ?? true;
   const auth = createAuth(db, {
     baseUrl: BASE_URL,
     secret: SECRET_KEY,
     devLoginEnabled,
+    ...(opts.github ? { github: opts.github } : {}),
   });
   const app = createApp({
     db,

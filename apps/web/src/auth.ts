@@ -51,7 +51,7 @@ export function createAuth(db: AuthDatabase, config: AuthConfig) {
     secret: config.secret,
     baseURL: config.baseUrl,
     emailAndPassword: { enabled: config.devLoginEnabled },
-    ...(Object.keys(social).length > 0 ? { social } : {}),
+    ...(Object.keys(social).length > 0 ? { socialProviders: social } : {}),
   });
 }
 

@@ -42,10 +42,14 @@ export default function Login({
     setBusy(true);
     setError(null);
     try {
-      await authClient.signIn.social({
+      const res = await authClient.signIn.social({
         provider,
         callbackURL: "/",
       });
+      if (res?.error) {
+        setError("ログインに失敗しました。もう一度お試しください");
+        setBusy(false);
+      }
     } catch {
       setError("ログインに失敗しました。もう一度お試しください");
       setBusy(false);
