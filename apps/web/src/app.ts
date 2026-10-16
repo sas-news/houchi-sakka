@@ -628,10 +628,14 @@ export function createApp(deps: WebDeps): FetchHandler {
           const thread = await getThreadByWorkId(db, work.id);
           if (!thread) return err(500, "internal", "対話スレッドが見つかりません");
 
-          // 元ジョブが使ったキーを優先し、無効/削除済みなら最新キーに落ちる
-          // (通常送信の既定解決と同じ)。
+          // キーは現在の作品設定を最優先 (設定修正後の再送を救うため)。
+          // 無ければ元ジョブのキー、それも無効なら最新キーに落ちる。
           let key = null;
-          if (typeof oldJob.payload.key_ref === "string") {
+          if (work.key_ref) {
+            const k = await getKeyById(db, work.key_ref);
+            if (k && k.owner_ref === user.id) key = k;
+          }
+          if (!key && typeof oldJob.payload.key_ref === "string") {
             const k = await getKeyById(db, oldJob.payload.key_ref);
             if (k && k.owner_ref === user.id) key = k;
           }
@@ -665,10 +669,13 @@ export function createApp(deps: WebDeps): FetchHandler {
               user_ref: user.id,
               key_ref: key.id,
               provider: key.provider,
+              // モデルも現在の作品設定を最優先。旧ペイロードに
+              // プロバイダー非互換の名前が残っていても救済される。
               model:
-                typeof oldJob.payload.model === "string"
+                work.model ??
+                (typeof oldJob.payload.model === "string"
                   ? oldJob.payload.model
-                  : defaultModelFor(key.provider),
+                  : defaultModelFor(key.provider)),
               trigger_message_id: message.id,
               resend_of: oldJob.id,
             },

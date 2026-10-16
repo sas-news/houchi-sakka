@@ -154,6 +154,41 @@ describe("失敗ジョブの再送", () => {
     expect(detail.messages).toHaveLength(3);
   });
 
+  it("再送は現在の作品設定のモデル/キーを使う (失敗した旧ペイロードを引きずらない)", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const { cookie, workId } = await setupWork(call);
+
+    // メッセージごとのモデル指定で旧ペイロードに互換性のない値が残った状態を再現
+    const res0 = await call(
+      "POST",
+      `/api/works/${workId}/messages`,
+      { content: "書きたい", model: "gpt-4o-mini" },
+      { token: null, cookie },
+    );
+    expect(res0.status).toBe(202);
+    const failed = await failLeased(call, "provider returned HTTP 404");
+
+    // 作品設定を修正してから再送 → 旧ペイロードでなく作品設定が使われる
+    const set = await call(
+      "PATCH",
+      `/api/works/${workId}/settings`,
+      { model: "gemini-2.5-flash" },
+      { token: null, cookie },
+    );
+    expect(set.status).toBe(200);
+
+    const res = await call(
+      "POST",
+      `/api/works/${workId}/jobs/${failed.id}/resend`,
+      undefined,
+      { token: null, cookie },
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { job: JobLite };
+    expect(body.job.payload.model).toBe("gemini-2.5-flash");
+  });
+
   it("queued のジョブは再送できない (400)", async () => {
     const { app } = makeApp();
     const call = makeCall(app);
