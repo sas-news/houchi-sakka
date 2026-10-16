@@ -73,7 +73,13 @@ export type ProgressEvent = z.infer<typeof ProgressEventSchema>;
 // ---------------------------------------------------------------------------
 
 /** BYO キーのプロバイダー名 (runner のプロバイダーレジストリ名と一致)。 */
-export const KeyProviderSchema = z.enum(["openai", "anthropic"]);
+export const KeyProviderSchema = z.enum([
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+  "groq",
+]);
 export type KeyProvider = z.infer<typeof KeyProviderSchema>;
 
 export const ProviderKeySchema = z.object({

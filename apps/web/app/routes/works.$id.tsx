@@ -2100,7 +2100,7 @@ export default function WorkPage({
               name="model"
               type="text"
               defaultValue={work.model ?? ""}
-              placeholder="例: gpt-4o-mini"
+              placeholder="例: gpt-4o-mini / gemini-2.5-flash"
             />
             {settingsMsg ? <p className="muted">{settingsMsg}</p> : null}
             <div className="form-actions">

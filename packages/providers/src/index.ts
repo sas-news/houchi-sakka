@@ -5,7 +5,9 @@ import type {
   ModelMessage,
 } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type {
   ProviderInputMessage,
   ProviderRequest,
@@ -61,6 +63,16 @@ export interface Provider {
 /** payload.provider 未指定時の既定。 */
 export const DEFAULT_PROVIDER_NAME = "openai";
 
+/** レジストリ名一覧。createProvider と常に一致させる。 */
+export const PROVIDER_NAMES = [
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+  "groq",
+  "stub",
+] as const;
+
 /**
  * プロバイダー名から Provider を組み立てる。
  * 未知の名前は undefined (呼び出し側でエラー化する)。
@@ -71,6 +83,18 @@ export function createProvider(name: string): Provider | undefined {
       return new OpenAIResponsesProvider();
     case "anthropic":
       return new AnthropicProvider();
+    case "gemini":
+      return new GoogleProvider();
+    case "openrouter":
+      return new OpenAICompatProvider({
+        baseURL: "https://openrouter.ai/api/v1",
+        name: "openrouter",
+      });
+    case "groq":
+      return new OpenAICompatProvider({
+        baseURL: "https://api.groq.com/openai/v1",
+        name: "groq",
+      });
     case "stub":
       return new StubProvider();
     default:
@@ -80,11 +104,9 @@ export function createProvider(name: string): Provider | undefined {
 
 /** 全プロバイダーのレジストリ (runner がそのまま使える形)。 */
 export function createProviders(): Record<string, Provider> {
-  return {
-    openai: new OpenAIResponsesProvider(),
-    anthropic: new AnthropicProvider(),
-    stub: new StubProvider(),
-  };
+  return Object.fromEntries(
+    PROVIDER_NAMES.map((n) => [n, createProvider(n)!]),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +292,46 @@ export class AnthropicProvider extends AiSdkProvider {
           createAnthropic({
             apiKey,
             ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+          })(modelId)),
+    );
+  }
+}
+
+/** Google Gemini (Generative Language API)。内部は @ai-sdk/google。 */
+export class GoogleProvider extends AiSdkProvider {
+  constructor(opts: AiSdkProviderOptions = {}) {
+    super(
+      opts.modelFactory ??
+        ((modelId, apiKey) =>
+          createGoogleGenerativeAI({
+            apiKey,
+            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+          })(modelId)),
+    );
+  }
+}
+
+export interface OpenAICompatProviderOptions extends AiSdkProviderOptions {
+  /** OpenAI 互換エンドポイント (例: https://openrouter.ai/api/v1)。必須。 */
+  baseURL: string;
+  /** エンドポイント識別名。未指定なら 'openai-compatible'。 */
+  name?: string;
+}
+
+/**
+ * OpenAI 互換 (Chat Completions) エンドポイント。
+ * OpenRouter / Groq 等、レジストリでは baseURL 固定のプリセットとして登録する。
+ * 内部は @ai-sdk/openai-compatible。
+ */
+export class OpenAICompatProvider extends AiSdkProvider {
+  constructor(opts: OpenAICompatProviderOptions) {
+    super(
+      opts.modelFactory ??
+        ((modelId, apiKey) =>
+          createOpenAICompatible({
+            name: opts.name ?? "openai-compatible",
+            baseURL: opts.baseURL,
+            apiKey,
           })(modelId)),
     );
   }

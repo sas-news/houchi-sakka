@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderRequest } from "@houchi/contracts";
 import {
   AnthropicProvider,
+  GoogleProvider,
+  OpenAICompatProvider,
   OpenAIResponsesProvider,
+  PROVIDER_NAMES,
   ProviderError,
   ProviderHttpError,
   ProviderNetworkError,
@@ -331,22 +334,26 @@ describe("AiSdkProvider ストリーム", () => {
 });
 
 describe("プロバイダー名レジストリ", () => {
-  it("createProvider: openai/anthropic/stub を返し、未指定既定は openai", () => {
+  it("createProvider: 登録名を返し、未指定既定は openai", () => {
     expect(createProvider("openai")).toBeInstanceOf(OpenAIResponsesProvider);
     expect(createProvider("anthropic")).toBeInstanceOf(AnthropicProvider);
+    expect(createProvider("gemini")).toBeInstanceOf(GoogleProvider);
+    expect(createProvider("openrouter")).toBeInstanceOf(OpenAICompatProvider);
+    expect(createProvider("groq")).toBeInstanceOf(OpenAICompatProvider);
     expect(createProvider("stub")).toBeInstanceOf(StubProvider);
     expect(createProvider("nope")).toBeUndefined();
   });
 
-  it("createProviders: 3名すべて登録", () => {
+  it("createProviders: PROVIDER_NAMES と一致する全名を登録", () => {
     const providers = createProviders();
-    expect(Object.keys(providers).sort()).toEqual([
-      "anthropic",
-      "openai",
-      "stub",
-    ]);
+    expect(Object.keys(providers).sort()).toEqual(
+      [...PROVIDER_NAMES].sort(),
+    );
     expect(providers.openai).toBeInstanceOf(OpenAIResponsesProvider);
     expect(providers.anthropic).toBeInstanceOf(AnthropicProvider);
+    expect(providers.gemini).toBeInstanceOf(GoogleProvider);
+    expect(providers.openrouter).toBeInstanceOf(OpenAICompatProvider);
+    expect(providers.groq).toBeInstanceOf(OpenAICompatProvider);
     expect(providers.stub).toBeInstanceOf(StubProvider);
   });
 });

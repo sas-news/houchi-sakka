@@ -434,7 +434,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // openai / anthropic / stub のレジストリ。
+  // openai / anthropic / gemini / openrouter / groq / stub のレジストリ。
   const providers: Record<string, Provider> = createProviders();
 
   // RUNNER_PROVIDER / --provider で既定('openai'名)を差し替える。

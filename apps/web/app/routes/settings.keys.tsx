@@ -12,6 +12,9 @@ export const meta: MetaFunction = () => [
 const PROVIDER_LABEL: Record<string, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
+  gemini: "Google Gemini",
+  openrouter: "OpenRouter",
+  groq: "Groq",
 };
 
 export async function loader({
@@ -104,13 +107,17 @@ export default function KeysPage({
           ありません。漏えい時の影響を減らすため、利用量の上限がある
           制限付きキーや、プロジェクト別に分けたキーの発行を推奨します。
           OpenAI はプロジェクト別キー、Anthropic はワークスペース別の
-          発行でスコープを絞れます。
+          発行でスコープを絞れます。Google Gemini は AI Studio
+          (aistudio.google.com) で無料で発行できます。
         </p>
         <form onSubmit={(e) => void submit(e)}>
           <label htmlFor="provider">プロバイダー</label>
           <select id="provider" name="provider" required>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
+            <option value="gemini">Google Gemini (無料枠あり)</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="groq">Groq</option>
           </select>
           <label htmlFor="label">ラベル (自分用の名前)</label>
           <input
