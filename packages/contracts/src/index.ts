@@ -153,6 +153,61 @@ export type ProgressRequest = z.infer<typeof ProgressRequestSchema>;
 export const ProgressResponseSchema = z.object({
   event: ProgressEventSchema,
 });
+
+// ---------------------------------------------------------------------------
+// AgentStep — ジョブ内の実行ステップ記録 (spec §7.4)。
+// 進捗イベントが UI 表示用なのに対し、こちらは監査・再開のための永続記録:
+// ステップ名・開始/終了・モデル/プロバイダー・使用量・成果物・エラー。
+// ---------------------------------------------------------------------------
+
+export const AgentStepSchema = z.object({
+  id: z.string(),
+  job_id: z.string(),
+  seq: z.number().int(),
+  /** ステップ名 (call_provider / persist_message など)。 */
+  name: z.string(),
+  status: z.enum(["ok", "error"]),
+  started_at: z.number(),
+  ended_at: z.number(),
+  model: z.string().nullable(),
+  provider: z.string().nullable(),
+  /** 計測された使用量 ('unknown' = 取得不可, spec §7.4)。 */
+  usage: z.unknown().nullable(),
+  /** 成果物の参照 ({kind, id} など)。 */
+  artifact: z.record(z.unknown()).nullable(),
+  error: z.string().nullable(),
+  created_at: z.number(),
+});
+export type AgentStep = z.infer<typeof AgentStepSchema>;
+
+/** POST /api/jobs/:id/steps — 実行体がステップ記録を1件書く。 */
+export const RecordStepRequestSchema = z.object({
+  lease_token: z.string().min(1),
+  name: z.string().min(1).max(200),
+  status: z.enum(["ok", "error"]).default("ok"),
+  started_at: z.number(),
+  /** 省略時はサーバー受信時刻。 */
+  ended_at: z.number().optional(),
+  model: z.string().optional(),
+  provider: z.string().optional(),
+  usage: z.unknown().optional(),
+  artifact: z.record(z.unknown()).optional(),
+  error: z.string().max(4000).optional(),
+});
+export type RecordStepRequest = z.infer<typeof RecordStepRequestSchema>;
+
+export const RecordStepResponseSchema = z.object({
+  step: AgentStepSchema,
+});
+export type RecordStepResponse = z.infer<typeof RecordStepResponseSchema>;
+
+/** GET /api/works/:id/jobs/:jobId — ユーザー向けジョブ詳細 (ステップ一覧付き)。 */
+export const JobDetailResponseSchema = z.object({
+  job: AgentJobSchema,
+  steps: z.array(AgentStepSchema),
+});
+export type JobDetailResponse = z.infer<typeof JobDetailResponseSchema>;
+
 export type ProgressResponse = z.infer<typeof ProgressResponseSchema>;
 
 export const HeartbeatRequestSchema = z.object({
@@ -341,6 +396,13 @@ export type User = z.infer<typeof UserSchema>;
 export const WorkStatusSchema = z.enum(["setup", "active"]);
 export type WorkStatus = z.infer<typeof WorkStatusSchema>;
 
+/**
+ * 自律運転レベル (spec §7.2)。off=対話のみ / draft=草案・提案まで自動
+ * (正典確定・公開はしない)。review_commit/auto_release は未実装。
+ */
+export const AutonomyLevelSchema = z.enum(["off", "draft"]);
+export type AutonomyLevel = z.infer<typeof AutonomyLevelSchema>;
+
 export const WorkSchema = z.object({
   id: z.string(),
   owner_ref: z.string(),
@@ -356,12 +418,32 @@ export const WorkSchema = z.object({
   provider: z.string().nullable(),
   model: z.string().nullable(),
   key_ref: z.string().nullable(),
+  /** 自律運転レベル (spec §7.2)。 */
+  autonomy_level: AutonomyLevelSchema,
+  /** 自律継続の残り往復数 (spec §7.3 利用者設定の実行上限)。 */
+  autonomy_budget: z.number().int(),
   /** 現在の正典リビジョン (spec §6.3。変更セット適用ごとに +1)。 */
   canon_rev: z.number().int(),
   created_at: z.number(),
   updated_at: z.number(),
 });
 export type Work = z.infer<typeof WorkSchema>;
+
+// ---------------------------------------------------------------------------
+// POST /api/works/:id/autonomy — 自律運転の開始/停止 (spec §7.2/§7.3)。
+// 開始時に実行上限を明示する (spec: 運転開始前に実行上限を明示)。
+// ---------------------------------------------------------------------------
+
+export const UpdateAutonomyRequestSchema = z.object({
+  action: z.enum(["start", "stop"]),
+  /** 開始時の自動往復上限 (既定 10)。 */
+  max_turns: z.number().int().min(1).max(100).optional(),
+});
+export type UpdateAutonomyRequest = z.infer<typeof UpdateAutonomyRequestSchema>;
+
+export const UpdateAutonomyResponseSchema = z.object({
+  work: WorkSchema,
+});
 
 export const ChatThreadSchema = z.object({
   id: z.string(),
@@ -408,8 +490,10 @@ export const OrchestratorTurnPayloadSchema = z.object({
   /** runner のプロバイダーレジストリ名 (キーの provider と一致)。 */
   provider: z.string().min(1),
   model: z.string().min(1),
-  /** この往復の起点になったユーザーメッセージ。 */
-  trigger_message_id: z.string().min(1),
+  /** この往復の起点になったユーザーメッセージ (自律往復では省略)。 */
+  trigger_message_id: z.string().optional(),
+  /** 自律運転による往復 (spec §7.2。指示文を入力に追加する)。 */
+  autonomous: z.boolean().optional(),
   checkpoint: OrchestratorCheckpointSchema.optional(),
 });
 export type OrchestratorTurnPayload = z.infer<typeof OrchestratorTurnPayloadSchema>;
@@ -419,6 +503,10 @@ export const OrchestratorTurnResultSchema = z.object({
   message_id: z.string(),
   /** 応答の先頭プレビュー (全文は chat_messages に保存済み)。 */
   reply_preview: z.string(),
+  /** この往復で適用した副作用 (work_patch/propose 等のマーカー名)。 */
+  actions: z.array(z.string()).optional(),
+  /** <<AUTO_STOP>> で自律運転の終了を要求 (spec §7.3)。 */
+  auto_stop: z.boolean().optional(),
 });
 export type OrchestratorTurnResult = z.infer<typeof OrchestratorTurnResultSchema>;
 

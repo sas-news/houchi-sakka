@@ -23,6 +23,8 @@ import {
   PersistRevisionRequestSchema,
   PlanProposalPayloadSchema,
   ProgressRequestSchema,
+  RecordStepRequestSchema,
+  UpdateAutonomyRequestSchema,
   PROPOSAL_KIND_PLAN,
   PROPOSAL_KIND_WORKSPACE_WRITE,
   PROPOSAL_KIND_WRITING_CONTRACT,
@@ -38,6 +40,7 @@ import {
   type AgentJob,
   type ApiErrorCode,
   type PreApplyCheck,
+  type Work,
 } from "@houchi/contracts";
 import {
   buildPlanTree,
@@ -87,7 +90,9 @@ import {
   getUserIdByEmail,
   getWorkById,
   heartbeat,
+  insertAgentStep,
   leaseNextJob,
+  listAgentStepsByJob,
   listCanonFactsByWork,
   listChangeSetsByWork,
   listContractsByWork,
@@ -119,6 +124,7 @@ import {
   updateContractStatus,
   updateProposalStatus,
   updateSceneStatus,
+  updateWorkAutonomy,
   updateWorkConfig,
   verifyChangeSetForApply,
   type DbLike,
@@ -222,6 +228,103 @@ export function createApp(deps: WebDeps): FetchHandler {
   };
   const defaultModelFor = (provider: string | null | undefined): string =>
     (provider && PROVIDER_DEFAULT_MODEL[provider]) || deps.defaultModel;
+
+  /** 自律運転の停止通知を対話スレッドへ残す (spec §7.3: 停止理由を保存)。 */
+  const stopAutonomy = async (work: Work, reason: string): Promise<void> => {
+    await updateWorkAutonomy(db, { id: work.id, level: "off", budget: 0 });
+    const thread = await getThreadByWorkId(db, work.id);
+    if (thread) {
+      await appendMessage(db, {
+        threadId: thread.id,
+        role: "system",
+        content: `自律実行を停止しました (${reason})`,
+      });
+    }
+  };
+
+  /**
+   * 自律運転 Draft only (spec §7.2/§7.3): ジョブ完了ごとに継続判定し、
+   * 次の自律 orchestrator_turn を起票する。停止条件:
+   * 実行上限・<<AUTO_STOP>>・副作用なしの応答 (作者の判断待ち)。
+   * 失敗時の停止は fail 側で行う。継続はベストエフォート (起票失敗で
+   * 完了応答を壊さないよう呼び出し側で握る)。
+   */
+  const maybeContinueAutonomy = async (completed: AgentJob): Promise<void> => {
+    if (!completed.work_ref) return;
+    const work = await getWorkById(db, completed.work_ref);
+    if (!work || work.autonomy_level !== "draft") return;
+
+    const result = (completed.result ?? null) as {
+      auto_stop?: boolean;
+      actions?: string[];
+    } | null;
+
+    if (work.autonomy_budget <= 0) {
+      await stopAutonomy(work, "実行上限に達しました");
+      return;
+    }
+    if (result?.auto_stop === true) {
+      await stopAutonomy(work, "オーケストレーターが終了を選択しました");
+      return;
+    }
+    // 自律往復が副作用なしの返答だけ = 作者の入力待ち → 停止 (spec §7.3)。
+    if (
+      completed.kind === JOB_KIND_ORCHESTRATOR_TURN &&
+      completed.payload.autonomous === true &&
+      result !== null &&
+      Array.isArray(result.actions) &&
+      result.actions.length === 0
+    ) {
+      await stopAutonomy(work, "作者の判断または返答が必要です");
+      return;
+    }
+
+    const thread = await getThreadByWorkId(db, work.id);
+    if (!thread) {
+      await stopAutonomy(work, "対話スレッドが見つかりません");
+      return;
+    }
+    // キー/モデルは現在の作品設定を優先し、直前ジョブ→最新キーの順に落ちる
+    // (再送と同じ解決順。設定修正が次の往復に効く)。
+    const p = completed.payload;
+    let key = work.key_ref ? await getKeyById(db, work.key_ref) : null;
+    if ((!key || key.owner_ref !== work.owner_ref) && typeof p.key_ref === "string") {
+      const k = await getKeyById(db, p.key_ref);
+      if (k && k.owner_ref === work.owner_ref) key = k;
+    }
+    if (!key || key.owner_ref !== work.owner_ref) {
+      key = (await listKeysByOwner(db, work.owner_ref)).at(-1) ?? null;
+    }
+    if (!key) {
+      await stopAutonomy(work, "利用できるAPIキーがありません");
+      return;
+    }
+
+    await updateWorkAutonomy(db, {
+      id: work.id,
+      budget: work.autonomy_budget - 1,
+    });
+    await createJob(db, {
+      kind: JOB_KIND_ORCHESTRATOR_TURN,
+      workRef: work.id,
+      userRef: work.owner_ref,
+      payload: {
+        thread_id: thread.id,
+        work_id: work.id,
+        user_ref: work.owner_ref,
+        key_ref: key.id,
+        provider: key.provider,
+        model:
+          work.model ??
+          (typeof p.model === "string"
+            ? p.model
+            : defaultModelFor(key.provider)),
+        autonomous: true,
+      },
+      // 完了したジョブごとに一意 → 同一完了からの二重継続を抑止
+      idempotencyKey: `auto_turn:${completed.id}`,
+    });
+  };
 
   const authorizedExecutor = async (req: Request): Promise<boolean> => {
     const h = req.headers.get("authorization");
@@ -683,6 +786,101 @@ export function createApp(deps: WebDeps): FetchHandler {
             idempotencyKey: `orchestrator_turn:${message.id}`,
           });
           return json({ message, job: publicJob(job) }, 202);
+        }
+
+        /**
+         * GET /api/works/:id/jobs/:jobId — ジョブ詳細+実行ステップ一覧
+         * (spec §7.4 の AgentStep を履歴表示で展開するため)。
+         */
+        const workJob = pathname.match(
+          /^\/api\/works\/([^/]+)\/jobs\/([^/]+)$/,
+        );
+        if (method === "GET" && workJob) {
+          const work = await getWorkById(db, workJob[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const job = await getJob(db, workJob[2]!);
+          if (!job || job.work_ref !== work.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const steps = await listAgentStepsByJob(db, job.id);
+          return json({ job: publicJob(job), steps });
+        }
+
+        /**
+         * POST /api/works/:id/autonomy — 自律運転の開始/停止
+         * (spec §7.2 Draft only。開始時に実行上限を明示して最初の自律
+         * 往復を起票する)。
+         */
+        const workAutonomy = pathname.match(
+          /^\/api\/works\/([^/]+)\/autonomy$/,
+        );
+        if (method === "POST" && workAutonomy) {
+          const work = await getWorkById(db, workAutonomy[1]!);
+          if (!work || work.owner_ref !== user.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const body = await parseBody(request, UpdateAutonomyRequestSchema);
+          if (body instanceof Response) return body;
+          if (body.action === "stop") {
+            const updated = await updateWorkAutonomy(db, {
+              id: work.id,
+              level: "off",
+              budget: 0,
+            });
+            return json({ work: updated });
+          }
+          if (work.autonomy_level === "draft") {
+            return err(400, "bad_request", "既に自律実行中です");
+          }
+          const thread = await getThreadByWorkId(db, work.id);
+          if (!thread) {
+            return err(500, "internal", "対話スレッドが見つかりません");
+          }
+          // キー解決は対話送信と同じ (作品設定→最新キー)。
+          const workKey = work.key_ref
+            ? await getKeyById(db, work.key_ref)
+            : null;
+          const key =
+            workKey && workKey.owner_ref === user.id
+              ? workKey
+              : (await listKeysByOwner(db, user.id)).at(-1);
+          if (!key) {
+            return err(
+              400,
+              "bad_request",
+              "プロバイダーのAPIキーが未登録です。キー設定から登録してください",
+            );
+          }
+          const maxTurns = body.max_turns ?? 10;
+          const updated = await updateWorkAutonomy(db, {
+            id: work.id,
+            level: "draft",
+            // この直後に1往復目を起票するので残りは maxTurns-1
+            budget: maxTurns - 1,
+          });
+          await createJob(db, {
+            kind: JOB_KIND_ORCHESTRATOR_TURN,
+            workRef: work.id,
+            userRef: user.id,
+            payload: {
+              thread_id: thread.id,
+              work_id: work.id,
+              user_ref: user.id,
+              key_ref: key.id,
+              provider: key.provider,
+              model: work.model ?? defaultModelFor(key.provider),
+              autonomous: true,
+            },
+            idempotencyKey: `auto_start:${work.id}:${crypto.randomUUID()}`,
+          });
+          await appendMessage(db, {
+            threadId: thread.id,
+            role: "system",
+            content: `自律実行を開始しました (上限 ${maxTurns} 往復)。草案や提案の作成まで自動で進め、確定が必要な場面では停止します。`,
+          });
+          return json({ work: updated });
         }
 
         // GET /api/keys — 自分のキー一覧 (ciphertext は絶対返さない)。
@@ -1505,9 +1703,9 @@ export function createApp(deps: WebDeps): FetchHandler {
         return json({ job: publicJob(job) });
       }
 
-      // POST /api/jobs/:id/(progress|heartbeat|complete|fail)
+      // POST /api/jobs/:id/(progress|heartbeat|complete|fail|steps)
       const jobAction = pathname.match(
-        /^\/api\/jobs\/([^/]+)\/(progress|heartbeat|complete|fail)$/,
+        /^\/api\/jobs\/([^/]+)\/(progress|heartbeat|complete|fail|steps)$/,
       );
       if (method === "POST" && jobAction) {
         const [, jobId, action] = jobAction as unknown as [
@@ -1541,6 +1739,30 @@ export function createApp(deps: WebDeps): FetchHandler {
           });
           return json({ job: publicJob(job) });
         }
+        if (action === "steps") {
+          const body = await parseBody(request, RecordStepRequestSchema);
+          if (body instanceof Response) return body;
+          const step = await insertAgentStep(db, {
+            jobId: jobId,
+            leaseToken: body.lease_token,
+            name: body.name,
+            status: body.status,
+            startedAt: body.started_at,
+            ...(body.ended_at !== undefined
+              ? { endedAt: body.ended_at }
+              : {}),
+            ...(body.model !== undefined ? { model: body.model } : {}),
+            ...(body.provider !== undefined
+              ? { provider: body.provider }
+              : {}),
+            ...(body.usage !== undefined ? { usage: body.usage } : {}),
+            ...(body.artifact !== undefined
+              ? { artifact: body.artifact }
+              : {}),
+            ...(body.error !== undefined ? { error: body.error } : {}),
+          });
+          return json({ step });
+        }
         if (action === "complete") {
           const body = await parseBody(request, CompleteRequestSchema);
           if (body instanceof Response) return body;
@@ -1549,6 +1771,12 @@ export function createApp(deps: WebDeps): FetchHandler {
             leaseToken: body.lease_token,
             result: body.result,
           });
+          // 自律運転の継続判定 (spec §7.2)。失敗しても完了応答は返す。
+          try {
+            await maybeContinueAutonomy(job);
+          } catch (e) {
+            console.error("autonomy continuation failed:", e);
+          }
           return json({ job: publicJob(job) });
         }
         const body = await parseBody(request, FailRequestSchema);
@@ -1558,6 +1786,17 @@ export function createApp(deps: WebDeps): FetchHandler {
           leaseToken: body.lease_token,
           error: body.error,
         });
+        // 自律往復の失敗は自律運転を止める (spec §7.3 障害時の安全停止)。
+        if (job.payload.autonomous === true && job.work_ref) {
+          try {
+            const work = await getWorkById(db, job.work_ref);
+            if (work && work.autonomy_level === "draft") {
+              await stopAutonomy(work, `ジョブが失敗しました: ${body.error.slice(0, 120)}`);
+            }
+          } catch (e) {
+            console.error("autonomy stop on failure failed:", e);
+          }
+        }
         return json({ job: publicJob(job) });
       }
 

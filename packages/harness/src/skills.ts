@@ -6,6 +6,7 @@ import type { SkillDefinition } from "@houchi/skills";
 import type { z } from "zod";
 import type { TokenCallback } from "@houchi/providers";
 import type { JobContext } from "./index.js";
+import { withStep } from "./index.js";
 
 /**
  * runSkillStep — スキル1段の実行 (Phase 2a)。
@@ -87,10 +88,22 @@ export async function runSkillStep<I, O>(
   const callOnce = async (
     input: ProviderInputMessage[],
   ): Promise<{ ok: true; output: O } | { ok: false; error: string }> => {
-    const resp = await provider.generate(
-      { model: args.model, input },
-      apiKey ?? "",
-      onToken,
+    // spec §7.4: 各スキル呼出しをステップ記録 (usage・所要時間・エラー)。
+    const resp = await withStep(
+      ctx,
+      args.step,
+      () =>
+        provider.generate(
+          { model: args.model, input },
+          apiKey ?? "",
+          onToken,
+        ),
+      (out) => ({
+        model: args.model,
+        provider: args.providerName,
+        usage: out.usage,
+        artifact: { kind: "skill", skill: skill.name },
+      }),
     );
     return tryParse(skill.outputSchema, resp.output_text);
   };

@@ -14,8 +14,10 @@ import {
 } from "react-router";
 import { api, ApiError } from "../lib/api";
 import { diffParagraphs } from "../lib/diff";
+import { Md } from "../lib/Markdown";
 import { getWorkDetail, requireUser } from "../lib/server";
 import type {
+  AgentStepInfo,
   CanonFactInfo,
   ChangeSetInfo,
   ChangeSetOp,
@@ -305,6 +307,50 @@ function streamText(detail: WorkDetail): string {
   return out;
 }
 
+/** 実行ステップ記録の表示 (spec §7.4。ステップ名・成否・モデル・usage・成果物)。 */
+function JobSteps({ steps }: { steps: AgentStepInfo[] | null }) {
+  if (steps === null) {
+    return <p className="muted">読み込み中…</p>;
+  }
+  if (steps.length === 0) {
+    return <p className="muted">ステップ記録はありません。</p>;
+  }
+  return (
+    <table className="steps-table">
+      <tbody>
+        {steps.map((s) => {
+          const usage = s.usage as {
+            input_tokens?: number;
+            output_tokens?: number;
+          } | null;
+          const usageText =
+            usage &&
+            (usage.input_tokens != null || usage.output_tokens != null)
+              ? `${usage.input_tokens ?? "?"}→${usage.output_tokens ?? "?"}tok`
+              : null;
+          return (
+            <tr key={s.id} className={s.status === "error" ? "err" : undefined}>
+              <td>{STEP_LABEL[s.name] ?? s.name}</td>
+              <td>{Math.max(0, s.ended_at - s.started_at)}ms</td>
+              <td>{s.model ?? "—"}</td>
+              <td>{usageText ?? "—"}</td>
+              <td>
+                {s.error ? (
+                  <span className="job-error">{s.error}</span>
+                ) : s.artifact ? (
+                  Object.values(s.artifact).join(" ")
+                ) : (
+                  "—"
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 /** Tiptap doc JSON を段落の配列に直す (表示・手編集 textarea 用)。 */
 function docToParagraphs(doc: unknown): string[] {
   if (!doc || typeof doc !== "object") return [];
@@ -546,7 +592,7 @@ function ChangeSetCard({
       </div>
       <div className="proposal-body">
         <strong>{cs.title}</strong>
-        {cs.description ? <p>{cs.description}</p> : null}
+        {cs.description ? <Md text={cs.description} /> : null}
         <p className="muted">{cs.impact.summary}</p>
         <ul>
           {cs.ops.map((op, i) => (
@@ -923,7 +969,7 @@ function ChangesView({
             </span>{" "}
             <span className="badge">{CS_KIND_LABEL[sel.kind]}</span>
           </h2>
-          {sel.description ? <p>{sel.description}</p> : null}
+          {sel.description ? <Md text={sel.description} /> : null}
 
           <strong>操作内容</strong>
           <ul>
@@ -1328,6 +1374,14 @@ export default function WorkPage({
   // 公開タブのデータ
   const [releases, setReleases] = useState<WorkReleases | null>(null);
   const [releaseError, setReleaseError] = useState<string | null>(null);
+  // 自律運転 (spec §7.2) の操作状態
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoTurns, setAutoTurns] = useState(10);
+  // 実行履歴のステップ記録展開 (spec §7.4)
+  const [jobSteps, setJobSteps] = useState<{
+    id: string;
+    steps: AgentStepInfo[] | null;
+  } | null>(null);
 
   const workId = loaderData.work.id;
 
@@ -1423,6 +1477,37 @@ export default function WorkPage({
       void refresh();
     } finally {
       setSending(false);
+    }
+  };
+
+  /** 自律運転の開始/停止 (spec §7.2/§7.3)。 */
+  const toggleAutonomy = async (action: "start" | "stop") => {
+    setAutoBusy(true);
+    setError(null);
+    try {
+      await api.setAutonomy(workId, action, autoTurns);
+      await refresh();
+    } catch (e) {
+      setError(
+        e instanceof ApiError ? e.message : "自律実行の切り替えに失敗しました",
+      );
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  /** 実行履歴のジョブ詳細 (ステップ記録) 展開トグル。 */
+  const toggleJobSteps = async (jobId: string) => {
+    if (jobSteps?.id === jobId) {
+      setJobSteps(null);
+      return;
+    }
+    setJobSteps({ id: jobId, steps: null });
+    try {
+      const d = await api.getJobDetail(workId, jobId);
+      setJobSteps({ id: jobId, steps: d.steps });
+    } catch {
+      setJobSteps({ id: jobId, steps: [] });
     }
   };
 
@@ -1681,9 +1766,17 @@ export default function WorkPage({
                 <div key={m.id}>
                   <div className={`msg ${m.role}`}>
                     <div className="who">
-                      {m.role === "user" ? "あなた" : "オーケストレーター"}
+                      {m.role === "user"
+                        ? "あなた"
+                        : m.role === "assistant"
+                          ? "オーケストレーター"
+                          : "システム"}
                     </div>
-                    {m.content}
+                    {m.role === "user" ? (
+                      m.content
+                    ) : (
+                      <Md text={m.content} />
+                    )}
                   </div>
                   {(() => {
                     const proposal = proposalByMessage.get(m.id);
@@ -1725,6 +1818,50 @@ export default function WorkPage({
               <div ref={bottomRef} />
             </div>
             {error ? <p className="error-text">{error}</p> : null}
+            <div className="autonomy-bar">
+              {work.autonomy_level === "draft" ? (
+                <>
+                  <span className="badge badge--accent">
+                    自律実行中 (残り {work.autonomy_budget} 往復)
+                  </span>
+                  <span className="muted">
+                    下書き・提案のみ。正典確定や公開はしません。
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={autoBusy}
+                    onClick={() => void toggleAutonomy("stop")}
+                  >
+                    停止
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={autoBusy || sending || executorStale}
+                    onClick={() => void toggleAutonomy("start")}
+                  >
+                    自律実行を開始
+                  </button>
+                  <label className="muted">
+                    上限{" "}
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={autoTurns}
+                      onChange={(e) =>
+                        setAutoTurns(Number(e.target.value) || 1)
+                      }
+                    />{" "}
+                    往復
+                  </label>
+                </>
+              )}
+            </div>
             <form className="chat-form" onSubmit={(e) => void submit(e)}>
               <label htmlFor="content">オーケストレーターへのメッセージ</label>
               <textarea
@@ -1780,10 +1917,20 @@ export default function WorkPage({
                           {JOB_KIND_LABEL[j.kind] ?? j.kind}{" "}
                           <span className="muted">
                             {formatDateTime(j.created_at)}
-                          </span>
+                          </span>{" "}
+                          <button
+                            type="button"
+                            className="linklike"
+                            onClick={() => void toggleJobSteps(j.id)}
+                          >
+                            {jobSteps?.id === j.id ? "閉じる" : "記録"}
+                          </button>
                         </div>
                         {errText ? (
                           <p className="job-error">{errText}</p>
+                        ) : null}
+                        {jobSteps?.id === j.id ? (
+                          <JobSteps steps={jobSteps.steps} />
                         ) : null}
                         {resendable ? (
                           <button

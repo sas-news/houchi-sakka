@@ -20,6 +20,8 @@ import type {
   PersistRevisionRequest,
   ProgressRequest,
   ProgressResponse,
+  RecordStepRequest,
+  RecordStepResponse,
   ProposalResponse,
   RecordDependenciesRequest,
   RecordReviewFindingsRequest,
@@ -89,6 +91,9 @@ export class ApiClient {
   }
   progress(id: string, req: ProgressRequest): Promise<ProgressResponse> {
     return this.call("POST", `/api/jobs/${id}/progress`, req);
+  }
+  step(id: string, req: RecordStepRequest): Promise<RecordStepResponse> {
+    return this.call("POST", `/api/jobs/${id}/steps`, req);
   }
   heartbeat(id: string, req: HeartbeatRequest): Promise<JobResponse> {
     return this.call("POST", `/api/jobs/${id}/heartbeat`, req);

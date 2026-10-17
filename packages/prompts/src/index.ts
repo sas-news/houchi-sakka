@@ -65,7 +65,9 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `あなたは創作パートナー「�
 - CANON_FACTS: 新たに確定した事項だけを列挙する。既に記録済みの内容は繰り返さない。なければ出さない。仮置き・未定の事項は commitment="provisional"、秘密事項は disclosure="secret" を付ける。
 - PROPOSE: contract の各フィールドは対話で確定した内容のみ書く。episode_title を省略すると最新の話に追加される。
 - RUN_PLAN: 引数は省略可。計画したいときだけ出す。
-- CHANGESET: 既存の正典・作品設定の変更を提案するときだけ出す。description は省略可。`;
+- CHANGESET: 既存の正典・作品設定の変更を提案するときだけ出す。description は省略可。
+
+自律実行モードでは、末尾に <<AUTO_STOP>> を出して自律継続を止められる (進めるべき作業が残っていない・作者の承認や判断が必要になったときに使う)。`;
 
 /** WORK_PATCH 行のマーカー。返答最終行のみをパース対象にする。 */
 const WORK_PATCH_LINE = /^<<WORK_PATCH\s+(.+?)>>$/;
@@ -119,6 +121,8 @@ export function buildOrchestratorInput(input: {
   pendingProposals?: string[];
   /** workspace のファイル一覧 (一覧+要約のみ。中身は載せない)。 */
   workspaceFiles?: { path: string; summary: string }[];
+  /** 自律往復なら true → 末尾に自律指示を足す (spec §7.2)。 */
+  autonomous?: boolean;
 }): ProviderInputMessage[] {
   const { work } = input;
   const lines = [
@@ -163,7 +167,12 @@ export function buildOrchestratorInput(input: {
     { role: "developer", content: ORCHESTRATOR_SYSTEM_PROMPT },
     {
       role: "developer",
-      content: `現在の作品情報:\n${lines.join("\n")}`,
+      // 自律指示は先頭の開発者ブロックに統合する。履歴の末尾に system/
+      // developer を置くと、会話先頭以外の system メッセージを拒否する
+      // プロバイダー (Gemini 等) でエラーになる。
+      content:
+        `現在の作品情報:\n${lines.join("\n")}` +
+        (input.autonomous ? `\n\n${AUTONOMY_DIRECTIVE}` : ""),
     },
     ...history,
   ];
@@ -181,6 +190,20 @@ export const CANON_FACTS_LINE = /^<<CANON_FACTS\s+(.+?)>>$/;
 
 /** 応答の末尾行の `<<RUN_PLAN>>` / `<<RUN_PLAN {…}>>` マーカー。 */
 export const RUN_PLAN_LINE = /^<<RUN_PLAN(?:\s+(.+?))?>>$/;
+
+/** 応答の末尾行の `<<AUTO_STOP>>` マーカー (自律実行の終了要求, spec §7.3)。 */
+export const AUTO_STOP_LINE = /^<<AUTO_STOP>>$/;
+
+/**
+ * 自律往復のプロンプト末尾に足す指示 (spec §7.2 Draft only)。
+ * ユーザーの新規発言ではなくシステムからの運転指示であることを明示し、
+ * 確定操作は提案に留める・止まるべきときは AUTO_STOP を出すことを命じる。
+ */
+export const AUTONOMY_DIRECTIVE =
+  `これは自律実行モードによる往復です。作者からの新しい指示ではありません。\n` +
+  `現在の作品状態を確認し、計画・草案・提案のうち次に進めるべき作業を1つ進めてください。\n` +
+  `正典の確定・公開・作者の承認を要する変更は、確定せず提案 (PROPOSE/CHANGESET) の形に留めてください。\n` +
+  `進めるべき作業がない、または作者の承認・判断・返答が必要な場合は、理由を簡潔に述べたうえで返答の末尾に <<AUTO_STOP>> を出してください。`;
 
 export type RunPlanMarker = {
   /** 計画への指示 (焦点・範囲など)。 */
@@ -223,6 +246,8 @@ export function parseOrchestratorMarkers(text: string): {
     description: string;
     ops: ChangeSetOp[];
   } | null;
+  /** <<AUTO_STOP>> が末尾にあったか (spec §7.3)。 */
+  autoStop: boolean;
 } {
   const lines = text.split("\n");
   let end = lines.length;
@@ -231,11 +256,17 @@ export function parseOrchestratorMarkers(text: string): {
   const factLists: CanonFactInput[][] = [];
   let runPlan: RunPlanMarker | null = null;
   const changeSets: ChangeSetMarker[] = [];
+  let autoStop = false;
 
   // 末尾の連続するマーカー行を後ろから読む
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
     if (line.trim() === "") {
+      end = i;
+      continue;
+    }
+    if (AUTO_STOP_LINE.test(line.trim())) {
+      autoStop = true;
       end = i;
       continue;
     }
@@ -323,6 +354,7 @@ export function parseOrchestratorMarkers(text: string): {
     canonFacts: factLists.flat(),
     runPlan,
     changeSet: cs,
+    autoStop,
   };
 }
 

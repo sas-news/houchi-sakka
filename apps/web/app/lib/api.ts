@@ -1,4 +1,5 @@
 import type {
+  AgentStepInfo,
   ChangeSetInfo,
   ChatMessageInfo,
   JobInfo,
@@ -119,4 +120,13 @@ export const api = {
       `/api/works/${workId}/jobs/${jobId}/resend`,
       "POST",
     ),
+  /** ジョブ詳細: 実行ステップ記録 (spec §7.4) 付き。 */
+  getJobDetail: (workId: string, jobId: string) =>
+    call<{ job: JobInfo; steps: AgentStepInfo[] }>(
+      `/api/works/${workId}/jobs/${jobId}`,
+    ),
+  /** 自律運転の開始/停止 (spec §7.2。開始時は上限往復数を送る)。 */
+  setAutonomy: (workId: string, action: "start" | "stop", maxTurns = 10) =>
+    call<{ work: WorkInfo }>(`/api/works/${workId}/autonomy`, "POST",
+      action === "start" ? { action, max_turns: maxTurns } : { action }),
 };

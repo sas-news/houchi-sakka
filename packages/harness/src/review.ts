@@ -15,6 +15,7 @@ import {
 } from "@houchi/skills";
 import { toCriticOutput, validateProse } from "@houchi/validators";
 import type { JobHandler } from "./index.js";
+import { withStep } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
 /** 契約がないシーンに渡す空の契約 (全フィールド既定値)。 */
@@ -135,10 +136,17 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
       step: "record_findings",
       count: findings.length,
     });
-    await ctx.recordReviewFindings({
-      change_set_id: cs.id,
-      findings,
-    });
+    const recordFindings = ctx.recordReviewFindings;
+    await withStep(
+      ctx,
+      "record_findings",
+      () =>
+        recordFindings({
+          change_set_id: cs.id,
+          findings,
+        }),
+      (r) => ({ artifact: { kind: "review_findings", added: r.added } }),
+    );
     await ctx.saveCheckpoint({ findings_recorded: true });
   }
 
@@ -250,12 +258,19 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
               ? "自動修正候補は見つかりませんでした。対話で修正を指示してください。"
               : "");
     await ctx.postProgress("status", { step: "report" });
-    const message = await ctx.persistChatMessage({
-      thread_id: csCtx.thread_id,
-      role: "assistant",
-      content: body,
-      job_id: job.id,
-    });
+    const persistMessage = ctx.persistChatMessage;
+    const message = await withStep(
+      ctx,
+      "persist_message",
+      () =>
+        persistMessage({
+          thread_id: csCtx.thread_id,
+          role: "assistant",
+          content: body,
+          job_id: job.id,
+        }),
+      (m) => ({ artifact: { kind: "chat_message", id: m.id } }),
+    );
     messageId = message.id;
     await ctx.saveCheckpoint({ message_id: messageId });
   }
@@ -264,16 +279,23 @@ export const runReviewChange: JobHandler = async (job, ctx) => {
   let fixChangeSetId = checkpoint.fix_change_set_id ?? null;
   if (!fixChangeSetId && fixOps.length > 0 && ctx.createChangeSet) {
     await ctx.postProgress("status", { step: "propose_fix" });
-    const fixCs = await ctx.createChangeSet({
-      work_id: payload.work_id,
-      title: `修正候補: ${cs.title}`,
-      description:
-        fixDescription ||
-        `変更セット「${cs.title}」のレビュー findings から自動生成した修正候補。`,
-      ops: fixOps,
-      message_id: messageId,
-      kind: "revision",
-    });
+    const createChangeSet = ctx.createChangeSet;
+    const fixCs = await withStep(
+      ctx,
+      "create_change_set",
+      () =>
+        createChangeSet({
+          work_id: payload.work_id,
+          title: `修正候補: ${cs.title}`,
+          description:
+            fixDescription ||
+            `変更セット「${cs.title}」のレビュー findings から自動生成した修正候補。`,
+          ops: fixOps,
+          message_id: messageId,
+          kind: "revision",
+        }),
+      (c) => ({ artifact: { kind: "change_set", id: c.id } }),
+    );
     fixChangeSetId = fixCs.id;
     await ctx.saveCheckpoint({ fix_change_set_id: fixChangeSetId });
   }

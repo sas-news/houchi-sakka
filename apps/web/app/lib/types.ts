@@ -29,9 +29,28 @@ export interface WorkInfo {
   provider: string | null;
   model: string | null;
   key_ref: string | null;
+  autonomy_level: "off" | "draft";
+  autonomy_budget: number;
   canon_rev: number;
   created_at: number;
   updated_at: number;
+}
+
+/** ジョブ内の実行ステップ記録 (spec §7.4)。 */
+export interface AgentStepInfo {
+  id: string;
+  job_id: string;
+  seq: number;
+  name: string;
+  status: "ok" | "error";
+  started_at: number;
+  ended_at: number;
+  model: string | null;
+  provider: string | null;
+  usage: unknown | null;
+  artifact: Record<string, unknown> | null;
+  error: string | null;
+  created_at: number;
 }
 
 export interface ChatMessageInfo {

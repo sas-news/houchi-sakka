@@ -1,6 +1,7 @@
 import { sql, type SQLWrapper } from "drizzle-orm";
 import {
   AgentJobSchema,
+  AgentStepSchema,
   CanonFactSchema,
   ChangeSetSchema,
   ChangeSetWithFindingsSchema,
@@ -30,6 +31,8 @@ import {
   WritingContractPayloadSchema,
   WritingContractSchema,
   type AgentJob,
+  type AgentStep,
+  type AutonomyLevel,
   type CanonFact,
   type CanonFactInput,
   type ChangeSet,
@@ -158,9 +161,31 @@ function rowToWork(r: Row): Work {
     provider: r.provider ?? null,
     model: r.model ?? null,
     key_ref: r.key_ref ?? null,
+    // 0010 未適用のローカル DB を壊さないよう列欠落時は既定値に倒す。
+    autonomy_level: r.autonomy_level ?? "off",
+    autonomy_budget: r.autonomy_budget ?? 0,
     canon_rev: r.canon_rev ?? 0,
     created_at: r.created_at,
     updated_at: r.updated_at,
+  });
+}
+
+function rowToStep(r: Row): AgentStep {
+  return AgentStepSchema.parse({
+    id: r.id,
+    job_id: r.job_id,
+    seq: r.seq,
+    name: r.name,
+    status: r.status,
+    started_at: r.started_at,
+    ended_at: r.ended_at,
+    model: r.model ?? null,
+    provider: r.provider ?? null,
+    usage: r.usage_json == null ? null : JSON.parse(String(r.usage_json)),
+    artifact:
+      r.artifact_json == null ? null : JSON.parse(String(r.artifact_json)),
+    error: r.error ?? null,
+    created_at: r.created_at,
   });
 }
 
@@ -311,6 +336,53 @@ export async function appendProgress(
     sql`UPDATE agent_jobs SET updated_at = ${t} WHERE id = ${input.jobId}`,
   );
   return rowToEvent(rows[0]!);
+}
+
+/** spec §7.4: 実行ステップを1件記録する (appendProgress と同じリース検査)。 */
+export async function insertAgentStep(
+  db: DbLike,
+  input: {
+    jobId: string;
+    leaseToken: string;
+    name: string;
+    status?: "ok" | "error";
+    startedAt: number;
+    endedAt?: number;
+    model?: string;
+    provider?: string;
+    usage?: unknown;
+    artifact?: Record<string, unknown>;
+    error?: string;
+  },
+): Promise<AgentStep> {
+  assertLease(await getJob(db, input.jobId), input.leaseToken);
+  const id = crypto.randomUUID();
+  const t = now();
+  const rows = (await db.all(sql`
+    INSERT INTO agent_steps (id, job_id, seq, name, status, started_at, ended_at, model, provider, usage_json, artifact_json, error, created_at)
+    VALUES (
+      ${id}, ${input.jobId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_steps WHERE job_id = ${input.jobId}),
+      ${input.name}, ${input.status ?? "ok"},
+      ${input.startedAt}, ${input.endedAt ?? t},
+      ${input.model ?? null}, ${input.provider ?? null},
+      ${input.usage === undefined ? null : JSON.stringify(input.usage ?? null)},
+      ${input.artifact === undefined ? null : JSON.stringify(input.artifact)},
+      ${input.error ?? null}, ${t}
+    )
+    RETURNING *
+  `)) as Row[];
+  return rowToStep(rows[0]!);
+}
+
+export async function listAgentStepsByJob(
+  db: DbLike,
+  jobId: string,
+): Promise<AgentStep[]> {
+  const rows = (await db.all(
+    sql`SELECT * FROM agent_steps WHERE job_id = ${jobId} ORDER BY seq ASC`,
+  )) as Row[];
+  return rows.map(rowToStep);
 }
 
 /**
@@ -625,6 +697,28 @@ export async function updateWorkConfig(
       key_ref = ${input.keyRef === undefined ? cur.key_ref : input.keyRef},
       provider = ${input.provider === undefined ? cur.provider : input.provider},
       model = ${input.model ?? cur.model},
+      updated_at = ${now()}
+    WHERE id = ${input.id}
+    RETURNING *
+  `)) as Row[];
+  return rowToWork(rows[0]!);
+}
+
+/** 自律運転レベル/残り往復数の更新 (spec §7.2/§7.3)。 */
+export async function updateWorkAutonomy(
+  db: DbLike,
+  input: {
+    id: string;
+    level?: AutonomyLevel;
+    budget?: number;
+  },
+): Promise<Work | null> {
+  const cur = await getWorkById(db, input.id);
+  if (!cur) return null;
+  const rows = (await db.all(sql`
+    UPDATE works SET
+      autonomy_level = ${input.level ?? cur.autonomy_level},
+      autonomy_budget = ${input.budget ?? cur.autonomy_budget},
       updated_at = ${now()}
     WHERE id = ${input.id}
     RETURNING *

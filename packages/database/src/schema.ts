@@ -48,6 +48,36 @@ export const progressEvents = sqliteTable(
   ],
 );
 
+/**
+ * spec §7.4 AgentStep — ジョブ内の実行ステップ記録。
+ * progress_events (UI 表示用) と別に、監査・再開のための永続記録。
+ */
+export const agentSteps = sqliteTable(
+  "agent_steps",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    seq: integer("seq").notNull(),
+    name: text("name").notNull(),
+    /** ok | error。 */
+    status: text("status").notNull().default("ok"),
+    startedAt: integer("started_at").notNull(),
+    endedAt: integer("ended_at").notNull(),
+    model: text("model"),
+    provider: text("provider"),
+    /** 使用量 JSON ('unknown' 文字列もあり得る, spec §7.4)。 */
+    usageJson: text("usage_json"),
+    /** 成果物参照 JSON ({kind, id} など)。 */
+    artifactJson: text("artifact_json"),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("agent_steps_job_seq_uq").on(t.jobId, t.seq),
+    index("agent_steps_job_idx").on(t.jobId),
+  ],
+);
+
 export const providerKeys = sqliteTable("provider_keys", {
   id: text("id").primaryKey(),
   ownerRef: text("owner_ref").notNull(),
@@ -77,6 +107,10 @@ export const works = sqliteTable(
     provider: text("provider"),
     model: text("model"),
     keyRef: text("key_ref"),
+    /** 自律運転レベル (spec §7.2: off | draft)。 */
+    autonomyLevel: text("autonomy_level").notNull().default("off"),
+    /** 自律継続の残り往復数 (spec §7.3 実行上限)。 */
+    autonomyBudget: integer("autonomy_budget").notNull().default(0),
     /** 現在の正典リビジョン (spec §6.3。変更セット適用ごとに +1)。 */
     canonRev: integer("canon_rev").notNull().default(0),
     createdAt: integer("created_at").notNull(),

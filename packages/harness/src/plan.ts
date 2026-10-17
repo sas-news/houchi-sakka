@@ -8,6 +8,7 @@ import {
 } from "@houchi/contracts";
 import { plannerSkill } from "@houchi/skills";
 import type { JobHandler } from "./index.js";
+import { withStep } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
 /**
@@ -74,22 +75,36 @@ export const runPlanWork: JobHandler = async (job, ctx) => {
       (acc, e) => acc + e.scenes.length,
       0,
     );
-    const message = await ctx.persistChatMessage({
-      thread_id: payload.thread_id,
-      role: "assistant",
-      content: `計画案を作りました: 話 ${episodeCount}件・シーン ${sceneCount}件。承認すると一括で作成されます。`,
-      job_id: job.id,
-    });
+    const persistMessage = ctx.persistChatMessage;
+    const message = await withStep(
+      ctx,
+      "persist_message",
+      () =>
+        persistMessage({
+          thread_id: payload.thread_id,
+          role: "assistant",
+          content: `計画案を作りました: 話 ${episodeCount}件・シーン ${sceneCount}件。承認すると一括で作成されます。`,
+          job_id: job.id,
+        }),
+      (m) => ({ artifact: { kind: "chat_message", id: m.id } }),
+    );
     assistantMessageId = message.id;
 
     await ctx.postProgress("status", { step: "create_proposal" });
-    const proposal = await ctx.createProposal({
-      work_id: payload.work_id,
-      thread_id: payload.thread_id,
-      message_id: assistantMessageId,
-      kind: PROPOSAL_KIND_PLAN,
-      payload: { episodes: plan.episodes },
-    });
+    const createProposal = ctx.createProposal;
+    const proposal = await withStep(
+      ctx,
+      "create_proposal",
+      () =>
+        createProposal({
+          work_id: payload.work_id,
+          thread_id: payload.thread_id,
+          message_id: assistantMessageId!,
+          kind: PROPOSAL_KIND_PLAN,
+          payload: { episodes: plan!.episodes },
+        }),
+      (p) => ({ artifact: { kind: "proposal", id: p.id } }),
+    );
     proposalId = proposal.id;
     await ctx.saveCheckpoint({
       assistant_message_id: assistantMessageId,

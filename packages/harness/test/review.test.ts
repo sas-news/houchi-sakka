@@ -21,6 +21,8 @@ const WORK: Work = {
   provider: null,
   model: null,
   key_ref: null,
+  autonomy_level: "off" as const,
+  autonomy_budget: 0,
   canon_rev: 1,
   created_at: 0,
   updated_at: 0,

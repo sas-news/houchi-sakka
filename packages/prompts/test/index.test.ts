@@ -56,6 +56,8 @@ describe("buildOrchestratorInput", () => {
     provider: null,
     model: null,
     key_ref: null,
+    autonomy_level: "off" as const,
+    autonomy_budget: 0,
     canon_rev: 0,
     created_at: 0,
     updated_at: 0,
@@ -131,6 +133,8 @@ describe("spec 4.3: コミットメント状態", () => {
         provider: null,
         model: null,
         key_ref: null,
+        autonomy_level: "off" as const,
+        autonomy_budget: 0,
         canon_rev: 0,
         created_at: 0,
         updated_at: 0,
@@ -148,5 +152,86 @@ describe("spec 4.3: コミットメント状態", () => {
     expect(ctx).toContain("[fact_id: f2] [仮置き] 黒服は機械かも");
     expect(ctx).toContain("[fact_id: f3] [秘密] 駅長は裏切り者");
     expect(ctx).toContain("[fact_id: f4] [未判断] 町の名前");
+  });
+});
+
+describe("spec §7.3: <<AUTO_STOP>> (自律運転の終了要求)", () => {
+  it("末尾の AUTO_STOP 行を検出し本文から除く", () => {
+    const r = parseOrchestratorMarkers(
+      "これ以上進めるには作者の判断が必要です。\n<<AUTO_STOP>>",
+    );
+    expect(r.autoStop).toBe(true);
+    expect(r.cleanText).toBe("これ以上進めるには作者の判断が必要です。");
+  });
+
+  it("AUTO_STOP がなければ autoStop=false", () => {
+    const r = parseOrchestratorMarkers("普通の返答です");
+    expect(r.autoStop).toBe(false);
+    expect(r.cleanText).toBe("普通の返答です");
+  });
+
+  it("他のマーカーと併存しても検出できる", () => {
+    const r = parseOrchestratorMarkers(
+      '提案だけ残して止まります。\n<<PROPOSE {"episode_title":"第1話","scene_title":"導入","scene_purpose":"目的","contract":{"role":"案内人","pov":"三人称","required_events":["出会い"],"forbidden":[],"knowledge_notes":"","connections":""}}>>\n<<AUTO_STOP>>',
+    );
+    expect(r.autoStop).toBe(true);
+    expect(r.proposal).not.toBeNull();
+    expect(r.cleanText).not.toContain("AUTO_STOP");
+    expect(r.cleanText).toBe("提案だけ残して止まります。");
+  });
+
+  it("buildOrchestratorInput は autonomous 時だけ自律指示を追加する", () => {
+    const work = {
+      id: "w1",
+      owner_ref: "u1",
+      title: "タイトル",
+      premise: "前提",
+      genre: "",
+      status: "setup" as const,
+      charter: null,
+      policy: null,
+      provider: null,
+      model: null,
+      key_ref: null,
+      autonomy_level: "off" as const,
+      autonomy_budget: 0,
+      canon_rev: 0,
+      created_at: 0,
+      updated_at: 0,
+    };
+    const auto = buildOrchestratorInput({
+      work,
+      messages: [
+        {
+          id: "m1",
+          thread_id: "t",
+          role: "user" as const,
+          content: "こんにちは",
+          job_id: null,
+          created_at: 0,
+        },
+      ],
+      autonomous: true,
+    });
+    expect(
+      auto.some(
+        (m) =>
+          m.role === "developer" &&
+          m.content.includes("自律実行モードによる往復です"),
+      ),
+    ).toBe(true);
+    // 自律指示は先頭ブロック内 — 履歴以後に developer メッセージを置かない
+    // (Gemini 等は会話先頭以外の system/developer を拒否する)。
+    const lastDeveloper = auto.map((m) => m.role).lastIndexOf("developer");
+    const firstNonDeveloper = auto.findIndex((m) => m.role !== "developer");
+    expect(lastDeveloper).toBeLessThan(firstNonDeveloper);
+    const manual = buildOrchestratorInput({ work, messages: [] });
+    expect(
+      manual.some(
+        (m) =>
+          m.role === "developer" &&
+          m.content.includes("自律実行モードによる往復です"),
+      ),
+    ).toBe(false);
   });
 });

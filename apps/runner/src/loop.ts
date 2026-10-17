@@ -164,6 +164,19 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
       await flushTokens();
       await postProgress(type, data);
     },
+    // ステップ記録は監査用の副次情報 — 失敗してもジョブを止めない
+    // (記録先の一時障害で本線が死なないよう、ここで握ってログだけ残す)。
+    recordStep: async (input) => {
+      try {
+        await api.step(jobId, {
+          lease_token: leaseToken,
+          ...input,
+          status: input.status ?? "ok",
+        });
+      } catch (e) {
+        log?.(`step record failed (${input.name}): ${String(e)}`);
+      }
+    },
     saveCheckpoint: infra("checkpoint", async (patch) => {
       await api.heartbeat(jobId, {
         lease_token: leaseToken,

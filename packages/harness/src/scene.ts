@@ -24,6 +24,7 @@ import {
   validateProse,
 } from "@houchi/validators";
 import type { JobHandler } from "./index.js";
+import { withStep } from "./index.js";
 import { runSkillStep } from "./skills.js";
 
 /** generate_scene がスクリプト側から取るコンテキスト。 */
@@ -292,12 +293,21 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
   let revNo = checkpoint.rev_no ?? 0;
   if (!revisionId) {
     await ctx.postProgress("status", { step: "persist_revision" });
-    const revision = await ctx.persistSceneRevision({
-      scene_id: payload.scene_id,
-      content_json: textToTiptapDoc(output.prose_md),
-      source: "ai",
-      job_id: job.id,
-    });
+    const persistRevision = ctx.persistSceneRevision;
+    const revision = await withStep(
+      ctx,
+      "persist_revision",
+      () =>
+        persistRevision({
+          scene_id: payload.scene_id,
+          content_json: textToTiptapDoc(output.prose_md),
+          source: "ai",
+          job_id: job.id,
+        }),
+      (r) => ({
+        artifact: { kind: "scene_revision", id: r.id, rev_no: r.rev_no },
+      }),
+    );
     revisionId = revision.id;
     revNo = revision.rev_no;
     await ctx.saveCheckpoint({ revision_id: revisionId, rev_no: revNo });
@@ -309,12 +319,19 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
       if (!ctx.addCanonFacts) {
         throw new Error("generate_scene canon persistence is not wired");
       }
+      const addFacts = ctx.addCanonFacts;
       await ctx.postProgress("status", { step: "add_canon_facts" });
-      await ctx.addCanonFacts({
-        work_id: sceneCtx.work.id,
-        statements: output.canon_facts_new,
-        provenance: `generate_scene:${sceneCtx.scene.id}`,
-      });
+      await withStep(
+        ctx,
+        "add_canon_facts",
+        () =>
+          addFacts({
+            work_id: sceneCtx.work.id,
+            statements: output.canon_facts_new,
+            provenance: `generate_scene:${sceneCtx.scene.id}`,
+          }),
+        (r) => ({ artifact: { kind: "canon_facts", added: r.added } }),
+      );
     }
     await ctx.saveCheckpoint({ canon_recorded: true });
   }
@@ -338,12 +355,19 @@ export const runGenerateScene: JobHandler = async (job, ctx) => {
       if (!ctx.recordDependencies) {
         throw new Error("generate_scene dependency persistence is not wired");
       }
+      const recordDeps = ctx.recordDependencies;
       await ctx.postProgress("status", { step: "record_dependencies" });
-      await ctx.recordDependencies({
-        scene_id: payload.scene_id,
-        work_id: sceneCtx.work.id,
-        edges,
-      });
+      await withStep(
+        ctx,
+        "record_dependencies",
+        () =>
+          recordDeps({
+            scene_id: payload.scene_id,
+            work_id: sceneCtx.work.id,
+            edges,
+          }),
+        (r) => ({ artifact: { kind: "dependency_edges", added: r.added } }),
+      );
     }
     await ctx.saveCheckpoint({ deps_recorded: true });
   }

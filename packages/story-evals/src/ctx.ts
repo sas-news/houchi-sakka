@@ -74,6 +74,8 @@ export function makeWork(input: {
     provider: null,
     model: null,
     key_ref: null,
+    autonomy_level: "off" as const,
+    autonomy_budget: 0,
     canon_rev: 0,
     created_at: 0,
     updated_at: 0,

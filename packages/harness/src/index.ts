@@ -80,6 +80,22 @@ export interface OrchestratorContextData {
  * fetchOrchestratorContext / persistChatMessage / applyWorkPatch は
  * orchestrator_turn 専用で、ジョブ起因の失敗をそのまま投げてよい。
  */
+/** spec §7.4 AgentStep の記録入力 (runner が /api/jobs/:id/steps へ書く)。 */
+export interface AgentStepInput {
+  /** ステップ名 (call_provider/write/critique/persist_revision など)。 */
+  name: string;
+  status?: "ok" | "error";
+  started_at: number;
+  ended_at?: number;
+  model?: string | undefined;
+  provider?: string | undefined;
+  /** 計測使用量 ('unknown' もあり得る, spec §7.4)。 */
+  usage?: unknown;
+  /** 成果物参照 ({kind, id} など)。 */
+  artifact?: Record<string, unknown> | undefined;
+  error?: string | undefined;
+}
+
 export interface JobContext {
   /**
    * key_ref を平文キーへ解決する。jobId はサーバー側の owner 照合
@@ -91,6 +107,8 @@ export interface JobContext {
   ): Promise<string | undefined>;
   getProvider(name: string | undefined): Provider;
   postProgress(type: ProgressEventType, data: unknown): Promise<void>;
+  /** spec §7.4 のステップ記録 (未配線の環境では省略可・失敗は無害)。 */
+  recordStep?(input: AgentStepInput): Promise<void>;
   /** payload.checkpoint への永続マージ。 */
   saveCheckpoint(patch: Record<string, unknown>): Promise<void>;
   /** 成果物確定 + 完了マーク (アトミック)。 */
@@ -182,6 +200,37 @@ export interface JobContext {
 export type JobHandler = (job: AgentJob, ctx: JobContext) => Promise<void>;
 export type JobHandlers = Record<string, JobHandler>;
 
+/**
+ * spec §7.4: ステップ記録つきで fn を実行する。
+ * 成功時は fields(out) の追加情報 (usage/artifact) を添えて記録し、
+ * 失敗時は error を記録して再送出する。recordStep 未配線では記録のみ省略。
+ */
+export async function withStep<T>(
+  ctx: JobContext,
+  name: string,
+  fn: () => Promise<T>,
+  fields?: (out: T) => Omit<AgentStepInput, "name" | "status" | "started_at" | "ended_at" | "error">,
+): Promise<T> {
+  const started = Date.now();
+  try {
+    const out = await fn();
+    await ctx.recordStep?.({
+      name,
+      started_at: started,
+      ...(fields?.(out) ?? {}),
+    });
+    return out;
+  } catch (e) {
+    await ctx.recordStep?.({
+      name,
+      status: "error",
+      started_at: started,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // smoke_generate: (a) resolve key → (b) call provider → (c) persist result
 // → (d) mark complete。provider 応答はチェックポイント化してから完了に進むので、
@@ -215,14 +264,26 @@ export const runSmokeGenerate: JobHandler = async (job, ctx) => {
       model: payload.model,
       stream: payload.stream === true,
     });
-    providerResult = await provider.generate(
-      {
+    providerResult = await withStep(
+      ctx,
+      "call_provider",
+      () =>
+        provider.generate(
+          {
+            model: payload.model,
+            input: payload.input,
+            ...(payload.stream !== undefined
+              ? { stream: payload.stream }
+              : {}),
+          },
+          apiKey ?? "",
+          onToken,
+        ),
+      (out) => ({
         model: payload.model,
-        input: payload.input,
-        ...(payload.stream !== undefined ? { stream: payload.stream } : {}),
-      },
-      apiKey ?? "",
-      onToken,
+        provider: payload.provider,
+        usage: out.usage,
+      }),
     );
     await progressChain;
 
