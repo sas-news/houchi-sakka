@@ -34,14 +34,17 @@ export class ProviderError extends Error {
   override name = "ProviderError";
 }
 
-/** HTTP エラー。status を型付きで保持する。 */
+/** HTTP エラー。status を型付きで保持し、本文の抜粋をメッセージに含める。 */
 export class ProviderHttpError extends ProviderError {
   override name = "ProviderHttpError";
   constructor(
     public readonly status: number,
     public readonly body: string,
   ) {
-    super(`provider returned HTTP ${status}`);
+    // body は呼び出し元で apiKey スクラブ済み。ジョブ履歴・ステップ記録に
+    // 残る message だけでは原因が見えないため、先頭300字だけ含める。
+    const excerpt = body.length > 300 ? `${body.slice(0, 300)}…` : body;
+    super(`provider returned HTTP ${status}: ${excerpt}`);
   }
 }
 
