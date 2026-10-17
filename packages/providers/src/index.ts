@@ -1,4 +1,10 @@
-import { APICallError, RetryError, generateText, streamText } from "ai";
+import {
+  APICallError,
+  InvalidResponseDataError,
+  RetryError,
+  generateText,
+  streamText,
+} from "ai";
 import type {
   LanguageModel,
   LanguageModelUsage,
@@ -249,13 +255,13 @@ export class AiSdkProvider implements Provider {
     apiKey: string,
     onToken?: TokenCallback,
   ): Promise<ProviderResponse> {
+    let accumulated = "";
     try {
       const result = streamText({
         model,
         messages,
         allowSystemInMessages: true,
       });
-      let accumulated = "";
       // textStream ではなく fullStream を読み、error パートをここで例外化する
       // (result.text / result.usage はストリーム中のエラーでは reject されない)。
       for await (const part of result.fullStream) {
@@ -272,6 +278,29 @@ export class AiSdkProvider implements Provider {
         usage: extractUsage(usage),
       };
     } catch (e) {
+      // GitHub Models 等の OpenAI 互換エンドポイントは、finish_reason を
+      // 付けずにストリームを閉じることがある (レート制限・フィルタ等で
+      // 途中切断)。まだ1トークンも emit していなければ UI に中途半端な
+      // 出力は残っていないので、非ストリームで取り直して救う。
+      // 部分出力済みなら末尾マーカー喪失の恐れがあるため素直に失敗させる。
+      if (
+        accumulated === "" &&
+        (InvalidResponseDataError.isInstance(e) ||
+          (e instanceof Error &&
+            e.message.includes("finish reason")))
+      ) {
+        try {
+          const res = await generateText({
+            model,
+            messages,
+            allowSystemInMessages: true,
+          });
+          if (res.text) onToken?.(res.text);
+          return { output_text: res.text, usage: extractUsage(res.usage) };
+        } catch (e2) {
+          throw toProviderError(e2, apiKey);
+        }
+      }
       throw toProviderError(e, apiKey);
     }
   }

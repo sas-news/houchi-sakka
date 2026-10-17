@@ -1,4 +1,9 @@
-import { APICallError, RetryError, simulateReadableStream } from "ai";
+import {
+  APICallError,
+  InvalidResponseDataError,
+  RetryError,
+  simulateReadableStream,
+} from "ai";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
@@ -305,6 +310,69 @@ describe("AiSdkProvider ストリーム", () => {
     const { factory } = fakeFactory(mock);
     const res = await p(factory).generate({ ...REQ, stream: true }, "k");
     expect(res.output_text).toBe("ab");
+  });
+
+  it("finish reason なしでストリームが閉じた場合は非ストリームにフォールバックする", async () => {
+    // GitHub Models 等の OpenAI 互換エンドポイントで起きる切断。
+    // まだ何も emit していなければ generateText で取り直す。
+    const mock = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            {
+              type: "error",
+              error: new InvalidResponseDataError({
+                data: undefined,
+                message: "Response stream ended without a finish reason.",
+              }),
+            },
+          ],
+        }),
+      },
+      doGenerate: genResult("救済された応答", 5, 9),
+    });
+    const { factory } = fakeFactory(mock);
+    const tokens: string[] = [];
+    const res = await p(factory).generate({ ...REQ, stream: true }, "k", (t) =>
+      tokens.push(t),
+    );
+    expect(res.output_text).toBe("救済された応答");
+    expect(res.usage).toEqual({ input_tokens: 5, output_tokens: 9 });
+    expect(tokens).toEqual(["救済された応答"]);
+    expect(mock.doGenerateCalls).toHaveLength(1);
+  });
+
+  it("部分出力済みでストリームが切れた場合はフォールバックせず失敗する", async () => {
+    // 末尾の構造化マーカーが欠けた応答を取り込む方が危険なので失敗させる。
+    const mock = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "途中まで" },
+            {
+              type: "error",
+              error: new InvalidResponseDataError({
+                data: undefined,
+                message: "Response stream ended without a finish reason.",
+              }),
+            },
+          ],
+        }),
+      },
+      doGenerate: genResult("x"),
+    });
+    const { factory } = fakeFactory(mock);
+    const tokens: string[] = [];
+    await expect(
+      p(factory).generate({ ...REQ, stream: true }, "k", (t) =>
+        tokens.push(t),
+      ),
+    ).rejects.toBeInstanceOf(ProviderError);
+    expect(tokens).toEqual(["途中まで"]);
+    expect(mock.doGenerateCalls).toHaveLength(0);
   });
 
   it("ストリーム中の error パートを ProviderError に変換する", async () => {
