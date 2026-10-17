@@ -79,6 +79,8 @@ export const KeyProviderSchema = z.enum([
   "gemini",
   "openrouter",
   "groq",
+  "github",
+  "custom",
 ]);
 export type KeyProvider = z.infer<typeof KeyProviderSchema>;
 
@@ -87,8 +89,10 @@ export const ProviderKeySchema = z.object({
   /** 所有者のユーザーID (users.id)。 */
   owner_ref: z.string(),
   label: z.string(),
-  /** どのプロバイダーのキーか (openai | anthropic)。 */
+  /** どのプロバイダーのキーか (openai | anthropic | ... | custom)。 */
   provider: z.string(),
+  /** OpenAI 互換のカスタムエンドポイント (custom プロバイダーで必須)。 */
+  base_url: z.string().nullable(),
   /** base64(iv).base64(ciphertext+tag) — 平文は保存しない。 */
   ciphertext: z.string(),
   created_at: z.number(),
@@ -245,6 +249,7 @@ export const CreateKeyRequestSchema = z.object({
   label: z.string().min(1),
   provider: z.string().min(1).optional(),
   api_key: z.string().min(1),
+  base_url: z.string().url().max(500).optional(),
 });
 export type CreateKeyRequest = z.infer<typeof CreateKeyRequestSchema>;
 
@@ -270,6 +275,8 @@ export type ResolveKeyRequest = z.infer<typeof ResolveKeyRequestSchema>;
 
 export const ResolveKeyResponseSchema = z.object({
   api_key: z.string(),
+  /** カスタムエンドポイント (OpenAI 互換) があればこれを使う。 */
+  base_url: z.string().nullish(),
 });
 export type ResolveKeyResponse = z.infer<typeof ResolveKeyResponseSchema>;
 
@@ -1123,6 +1130,8 @@ export const CreateUserKeyRequestSchema = z.object({
   label: z.string().min(1).max(100),
   provider: KeyProviderSchema,
   api_key: z.string().min(1).max(500),
+  /** OpenAI 互換のカスタムエンドポイント (provider=custom で必須)。 */
+  base_url: z.string().url().max(500).optional(),
 });
 export type CreateUserKeyRequest = z.infer<typeof CreateUserKeyRequestSchema>;
 

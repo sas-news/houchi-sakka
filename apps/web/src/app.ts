@@ -225,6 +225,7 @@ export function createApp(deps: WebDeps): FetchHandler {
     anthropic: "claude-haiku-4-5",
     openrouter: "meta-llama/llama-3.3-70b-instruct:free",
     groq: "llama-3.3-70b-versatile",
+    github: "gpt-4o-mini",
   };
   const defaultModelFor = (provider: string | null | undefined): string =>
     (provider && PROVIDER_DEFAULT_MODEL[provider]) || deps.defaultModel;
@@ -900,11 +901,22 @@ export function createApp(deps: WebDeps): FetchHandler {
         if (method === "POST" && pathname === "/api/keys") {
           const body = await parseBody(request, CreateUserKeyRequestSchema);
           if (body instanceof Response) return body;
+          // custom は OpenAI 互換エンドポイントの base_url が必須
+          if (body.provider === "custom" && !body.base_url) {
+            return err(
+              400,
+              "bad_request",
+              "カスタムプロバイダーにはエンドポイントURL (OpenAI互換) が必要です",
+            );
+          }
           const ciphertext = await encrypt(body.api_key, secretKey);
           const key = await createKey(db, {
             ownerRef: user.id,
             label: body.label,
             provider: body.provider,
+            ...(body.base_url !== undefined
+              ? { baseUrl: body.base_url }
+              : {}),
             ciphertext,
           });
           const { ciphertext: _drop, ...pub } = key;
@@ -1811,6 +1823,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           ...(body.provider !== undefined
             ? { provider: body.provider }
             : {}),
+          ...(body.base_url !== undefined ? { baseUrl: body.base_url } : {}),
           ciphertext,
         });
         const { ciphertext: _drop, ...pub } = key;
@@ -1836,7 +1849,7 @@ export function createApp(deps: WebDeps): FetchHandler {
           return err(403, "forbidden", "キーの所有者がジョブのユーザーと一致しません");
         }
         const apiKey = await decrypt(key.ciphertext, secretKey);
-        return json({ api_key: apiKey });
+        return json({ api_key: apiKey, base_url: key.base_url });
       }
 
       // GET /api/internal/threads/:id/context — orchestrator の入力材料

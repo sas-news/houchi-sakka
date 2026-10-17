@@ -83,6 +83,8 @@ export const providerKeys = sqliteTable("provider_keys", {
   ownerRef: text("owner_ref").notNull(),
   label: text("label").notNull(),
   provider: text("provider").notNull().default("openai"),
+  /** OpenAI 互換のカスタムエンドポイント (spec §9。null = プリセット側)。 */
+  baseUrl: text("base_url"),
   ciphertext: text("ciphertext").notNull(),
   createdAt: integer("created_at").notNull(),
 });

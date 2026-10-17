@@ -12,6 +12,8 @@ export interface KeyInfo {
   owner_ref: string;
   label: string;
   provider: string;
+  /** OpenAI 互換のカスタムエンドポイント (custom プロバイダーのみ)。 */
+  base_url?: string | null;
   created_at: number;
   /** このキーを参照している作品数 (削除時の影響表示)。 */
   works_using?: number;

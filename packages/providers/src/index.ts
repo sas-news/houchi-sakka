@@ -70,6 +70,7 @@ export const PROVIDER_NAMES = [
   "gemini",
   "openrouter",
   "groq",
+  "github",
   "stub",
 ] as const;
 
@@ -94,6 +95,13 @@ export function createProvider(name: string): Provider | undefined {
       return new OpenAICompatProvider({
         baseURL: "https://api.groq.com/openai/v1",
         name: "groq",
+      });
+    // GitHub Models (https://github.com/marketplace/models)。
+    // GitHub PAT をキーとして渡す OpenAI 互換エンドポイント。
+    case "github":
+      return new OpenAICompatProvider({
+        baseURL: "https://models.github.ai/inference",
+        name: "github",
       });
     case "stub":
       return new StubProvider();

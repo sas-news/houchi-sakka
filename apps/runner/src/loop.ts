@@ -1,5 +1,5 @@
 import { JobInfraError, runJob, type JobContext } from "@houchi/harness";
-import type { Provider } from "@houchi/providers";
+import { OpenAICompatProvider, type Provider } from "@houchi/providers";
 import type { ApiClient } from "./api.js";
 
 /**
@@ -73,6 +73,11 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
     await postProgress("token", { text });
   };
 
+  // キーに紐づくカスタムエンドポイント (OpenAI 互換)。resolveKey で
+  // 解決され、generate() 時点で読まれる (getProvider→generate は常に
+  // resolveKey の後なので遅延参照でよい)。
+  let resolvedBaseUrl: string | undefined;
+
   const ctx: JobContext = {
     resolveKey: async (keyRef, jobRef) => {
       if (deps.envKey !== undefined) return deps.envKey;
@@ -82,6 +87,7 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
         );
       }
       const res = await api.resolveKey(keyRef, { job_id: jobRef ?? jobId });
+      resolvedBaseUrl = res.base_url ?? undefined;
       return res.api_key;
     },
     fetchOrchestratorContext: async (threadId) =>
@@ -150,9 +156,21 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
       return res.revision;
     },
     getProvider: (name) => {
-      const provider = deps.providers[name ?? "openai"];
-      if (!provider) throw new Error(`unknown provider: ${name}`);
-      return provider;
+      const n = name ?? "openai";
+      const named = deps.providers[n];
+      // base_url 付きキー (custom/プロキシ等) は OpenAI 互換アダプターを
+      // 動的に組み立てる。レジストリに無い名前でも resolvedBaseUrl が
+      // あれば動く。requiresKey は解決済みプロバイダーの属性を引き継ぐ。
+      return {
+        requiresKey: named?.requiresKey ?? true,
+        generate: (req, apiKey, onToken) => {
+          const provider = resolvedBaseUrl
+            ? new OpenAICompatProvider({ baseURL: resolvedBaseUrl, name: n })
+            : named;
+          if (!provider) throw new Error(`unknown provider: ${n}`);
+          return provider.generate(req, apiKey, onToken);
+        },
+      };
     },
     postProgress: async (type, data) => {
       if (type === "token") {

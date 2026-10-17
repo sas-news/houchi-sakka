@@ -299,3 +299,99 @@ describe("作品 + 対話", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("カスタムプロバイダー / GitHub Models (spec §9)", () => {
+  it("custom は base_url 必須。登録すると resolve が base_url を返す", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const cookie = await devLogin(call);
+
+    // base_url なしの custom は 400
+    const bad = await call(
+      "POST",
+      "/api/keys",
+      { provider: "custom", label: "c", api_key: "sk-x" },
+      { token: null, cookie },
+    );
+    expect(bad.status).toBe(400);
+
+    const res = await call(
+      "POST",
+      "/api/keys",
+      {
+        provider: "custom",
+        label: "Ollama",
+        api_key: "ollama",
+        base_url: "http://localhost:11434/v1",
+      },
+      { token: null, cookie },
+    );
+    expect(res.status).toBe(201);
+    const { key } = (await res.json()) as {
+      key: { id: string; base_url: string | null };
+    };
+    expect(key.base_url).toBe("http://localhost:11434/v1");
+
+    // resolve (実行体側) も base_url を返す — ジョブを立てて所有者照合を通す
+    await call(
+      "POST",
+      `/api/works`,
+      { title: "w" },
+      { token: null, cookie },
+    );
+    const work = await call("GET", "/api/works", undefined, {
+      token: null,
+      cookie,
+    });
+    const { works } = (await work.json()) as { works: { id: string }[] };
+    const msg = await call(
+      "POST",
+      `/api/works/${works[0]!.id}/messages`,
+      { content: "x" },
+      { token: null, cookie },
+    );
+    const { job } = (await msg.json()) as { job: { id: string } };
+    const resolve = await call("POST", `/api/internal/keys/${key.id}/resolve`, {
+      job_id: job.id,
+    });
+    expect(resolve.status).toBe(200);
+    const resolved = (await resolve.json()) as {
+      api_key: string;
+      base_url?: string | null;
+    };
+    expect(resolved.api_key).toBe("ollama");
+    expect(resolved.base_url).toBe("http://localhost:11434/v1");
+  });
+
+  it("github キーの作品は既定モデルが gpt-4o-mini になる", async () => {
+    const { app } = makeApp();
+    const call = makeCall(app);
+    const cookie = await devLogin(call);
+    await call(
+      "POST",
+      "/api/keys",
+      { provider: "github", label: "gh", api_key: "github_pat_x" },
+      { token: null, cookie },
+    );
+    const workRes = await call(
+      "POST",
+      "/api/works",
+      { title: "w" },
+      { token: null, cookie },
+    );
+    const { work } = (await workRes.json()) as { work: { id: string } };
+
+    const res = await call(
+      "POST",
+      `/api/works/${work.id}/messages`,
+      { content: "テスト" },
+      { token: null, cookie },
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      job: { payload: { provider?: string; model?: string } };
+    };
+    expect(body.job.payload.provider).toBe("github");
+    expect(body.job.payload.model).toBe("gpt-4o-mini");
+  });
+});

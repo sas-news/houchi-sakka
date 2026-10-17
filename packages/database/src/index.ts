@@ -143,6 +143,7 @@ function rowToKey(r: Row): ProviderKey {
     owner_ref: r.owner_ref,
     label: r.label,
     provider: r.provider,
+    base_url: r.base_url ?? null,
     ciphertext: r.ciphertext,
     created_at: r.created_at,
   });
@@ -526,14 +527,17 @@ export async function createKey(
     ownerRef: string;
     label: string;
     provider?: string;
+    /** OpenAI 互換のカスタムエンドポイント (custom プロバイダーで使用)。 */
+    baseUrl?: string | null;
     ciphertext: string;
   },
 ): Promise<ProviderKey> {
   const id = crypto.randomUUID();
   const rows = (await db.all(sql`
-    INSERT INTO provider_keys (id, owner_ref, label, provider, ciphertext, created_at)
+    INSERT INTO provider_keys (id, owner_ref, label, provider, base_url, ciphertext, created_at)
     VALUES (${id}, ${input.ownerRef}, ${input.label},
-            ${input.provider ?? "openai"}, ${input.ciphertext}, ${now()})
+            ${input.provider ?? "openai"}, ${input.baseUrl ?? null},
+            ${input.ciphertext}, ${now()})
     RETURNING *
   `)) as Row[];
   return rowToKey(rows[0]!);

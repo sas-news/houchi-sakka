@@ -15,6 +15,8 @@ const PROVIDER_LABEL: Record<string, string> = {
   gemini: "Google Gemini",
   openrouter: "OpenRouter",
   groq: "Groq",
+  github: "GitHub Models",
+  custom: "カスタム (OpenAI互換)",
 };
 
 export async function loader({
@@ -44,6 +46,7 @@ export default function KeysPage({
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [provider, setProvider] = useState("openai");
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -51,6 +54,7 @@ export default function KeysPage({
     const data = new FormData(form);
     setBusy(true);
     setError(null);
+    const baseUrl = String(data.get("base_url") ?? "").trim();
     const res = await fetch("/api/keys", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -58,6 +62,7 @@ export default function KeysPage({
         provider: String(data.get("provider")),
         label: String(data.get("label")),
         api_key: String(data.get("api_key")),
+        ...(baseUrl !== "" ? { base_url: baseUrl } : {}),
       }),
     });
     if (!res.ok) {
@@ -108,17 +113,49 @@ export default function KeysPage({
           制限付きキーや、プロジェクト別に分けたキーの発行を推奨します。
           OpenAI はプロジェクト別キー、Anthropic はワークスペース別の
           発行でスコープを絞れます。Google Gemini は AI Studio
-          (aistudio.google.com) で無料で発行できます。
+          (aistudio.google.com) で、GitHub Models は GitHub の
+          個人アクセストークンで無料で利用できます。
         </p>
         <form onSubmit={(e) => void submit(e)}>
           <label htmlFor="provider">プロバイダー</label>
-          <select id="provider" name="provider" required>
+          <select
+            id="provider"
+            name="provider"
+            required
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+          >
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="gemini">Google Gemini (無料枠あり)</option>
             <option value="openrouter">OpenRouter</option>
-            <option value="groq">Groq</option>
+            <option value="groq">Groq (無料枠あり)</option>
+            <option value="github">GitHub Models (無料)</option>
+            <option value="custom">OpenAI互換 (カスタムURL)</option>
           </select>
+          {provider === "github" ? (
+            <p className="side-note">
+              GitHub の個人アクセストークン (PAT) を APIキー欄に入力します。
+              github.com/settings/personal-access-tokens で発行できます。
+            </p>
+          ) : null}
+          {provider === "custom" ? (
+            <>
+              <label htmlFor="base_url">エンドポイントURL (OpenAI互換)</label>
+              <input
+                id="base_url"
+                name="base_url"
+                type="url"
+                required
+                placeholder="https://example.com/v1"
+              />
+              <p className="side-note">
+                /chat/completions に対応する OpenAI 互換APIの URL。
+                Ollama や LM Studio などローカルLLMにも使えます
+                (runner がローカル実行の場合のみ到達可能)。
+              </p>
+            </>
+          ) : null}
           <label htmlFor="label">ラベル (自分用の名前)</label>
           <input
             id="label"
