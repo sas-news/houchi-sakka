@@ -235,6 +235,9 @@ export const ChangeSetMarkerSchema = z.object({
 });
 export type ChangeSetMarker = z.infer<typeof ChangeSetMarkerSchema>;
 
+const MARKER_OPEN =
+  /<<(WORK_PATCH|PROPOSE|CANON_FACTS|CHANGESET|RUN_PLAN|AUTO_STOP)(?=[\s>])/g;
+
 export function parseOrchestratorMarkers(text: string): {
   cleanText: string;
   patch: WorkPatchRequest | null;
@@ -249,102 +252,108 @@ export function parseOrchestratorMarkers(text: string): {
   /** <<AUTO_STOP>> が末尾にあったか (spec §7.3)。 */
   autoStop: boolean;
 } {
-  const lines = text.split("\n");
-  let end = lines.length;
   const patches: WorkPatchRequest[] = [];
   const proposals: ProposeMarker[] = [];
   const factLists: CanonFactInput[][] = [];
   let runPlan: RunPlanMarker | null = null;
   const changeSets: ChangeSetMarker[] = [];
   let autoStop = false;
+  let tail = text;
 
-  // 末尾の連続するマーカー行を後ろから読む
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!;
-    if (line.trim() === "") {
-      end = i;
-      continue;
+  // 末尾の連続するマーカーを後ろから読む。
+  // 1行に複数マーカーが並んだり JSON が複数行にまたがる応答にも対応するため
+  // 行単位ではなく <<TAG ...>> の位置で切り出す。JSON 内に >> があっても
+  // 後続の >> を順に試す。JSON はパースできたがスキーマ不合ならマーカーは
+  // 本文に残して打ち止め。
+  const tryMarker = (tag: string, jsonText: string): boolean | null => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(jsonText);
+    } catch {
+      return null; // 閉じ位置が違うかも → 次の >> を試す
     }
-    if (AUTO_STOP_LINE.test(line.trim())) {
+    try {
+      switch (tag) {
+        case "WORK_PATCH":
+          patches.unshift(WorkPatchRequestSchema.parse(raw));
+          return true;
+        case "PROPOSE": {
+          const p = ProposeScenePayloadSchema.parse(raw);
+          proposals.unshift({
+            ...(p.episode_title ? { episodeTitle: p.episode_title } : {}),
+            sceneTitle: p.scene_title,
+            scenePurpose: p.scene_purpose,
+            contract: p.contract,
+          });
+          return true;
+        }
+        case "CANON_FACTS":
+          factLists.unshift(z.array(CanonFactInputSchema).parse(raw));
+          return true;
+        case "CHANGESET":
+          changeSets.unshift(ChangeSetMarkerSchema.parse(raw));
+          return true;
+        case "RUN_PLAN": {
+          const o = z
+            .object({ guidance: z.string().optional() })
+            .passthrough()
+            .parse(raw);
+          runPlan = o.guidance !== undefined ? { guidance: o.guidance } : {};
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  outer: while (true) {
+    MARKER_OPEN.lastIndex = 0;
+    let last: RegExpExecArray | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = MARKER_OPEN.exec(tail))) last = m;
+    if (!last) break;
+    const start = last.index;
+    const tag = last[1]!;
+    const after = tail.slice(start + last[0].length);
+
+    if (tag === "AUTO_STOP") {
+      const close = after.match(/^\s*>>/);
+      if (!close) break;
+      const end = start + last[0].length + close[0].length;
+      if (tail.slice(end).trim() !== "") break;
       autoStop = true;
-      end = i;
+      tail = tail.slice(0, start);
       continue;
     }
-    const patchMatch = line.match(WORK_PATCH_LINE);
-    const proposeMatch = line.match(PROPOSE_LINE);
-    const canonMatch = line.match(CANON_FACTS_LINE);
-    if (patchMatch) {
-      try {
-        patches.unshift(WorkPatchRequestSchema.parse(JSON.parse(patchMatch[1]!)));
-        end = i;
-        continue;
-      } catch {
-        break;
-      }
-    }
-    if (proposeMatch) {
-      try {
-        const raw = JSON.parse(proposeMatch[1]!);
-        const p = ProposeScenePayloadSchema.parse(raw);
-        proposals.unshift({
-          ...(p.episode_title ? { episodeTitle: p.episode_title } : {}),
-          sceneTitle: p.scene_title,
-          scenePurpose: p.scene_purpose,
-          contract: p.contract,
-        });
-        end = i;
-        continue;
-      } catch {
-        break;
-      }
-    }
-    if (canonMatch) {
-      try {
-        const raw = JSON.parse(canonMatch[1]!);
-        const arr = z.array(CanonFactInputSchema).parse(raw);
-        factLists.unshift(arr);
-        end = i;
-        continue;
-      } catch {
-        break;
-      }
-    }
-    const changeSetMatch = line.match(CHANGESET_LINE);
-    if (changeSetMatch) {
-      try {
-        changeSets.unshift(
-          ChangeSetMarkerSchema.parse(JSON.parse(changeSetMatch[1]!)),
-        );
-        end = i;
-        continue;
-      } catch {
-        break;
-      }
-    }
-    const runPlanMatch = line.match(RUN_PLAN_LINE);
-    if (runPlanMatch) {
-      // JSON 引数は省略可。壊れた JSON はマーカーごと捨てる。
-      if (runPlanMatch[1] === undefined) {
-        runPlan = {};
-        end = i;
+
+    let searchFrom = 0;
+    while (true) {
+      const closeIdx = after.indexOf(">>", searchFrom);
+      if (closeIdx === -1) break;
+      const end = start + last[0].length + closeIdx + 2;
+      // 末尾まで空白のみでないなら、この >> は JSON 内の文字列か
+      // マーカーが末尾にない → 次の >> 候補へ。
+      if (tail.slice(end).trim() !== "") {
+        searchFrom = closeIdx + 2;
         continue;
       }
-      try {
-        const raw = z
-          .object({ guidance: z.string().optional() })
-          .passthrough()
-          .parse(JSON.parse(runPlanMatch[1]));
-        runPlan = raw.guidance !== undefined ? { guidance: raw.guidance } : {};
-        end = i;
-        continue;
-      } catch {
-        break;
+      const res = tryMarker(tag, after.slice(0, closeIdx));
+      if (res === true) {
+        tail = tail.slice(0, start);
+        continue outer;
       }
+      if (res === null) {
+        searchFrom = closeIdx + 2;
+        continue;
+      }
+      break outer;
     }
     break;
   }
 
-  const cleanText = lines.slice(0, end).join("\n").trimEnd();
+  const cleanText = tail.trimEnd();
   const cs =
     changeSets.length > 0 ? changeSets[changeSets.length - 1]! : null;
   return {

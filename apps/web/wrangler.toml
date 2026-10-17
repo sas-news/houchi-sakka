@@ -13,5 +13,5 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "houchi-sakka"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "c25b1ace-15dc-45e5-b7de-a44f7b113d78"
 migrations_dir = "../../packages/database/migrations"

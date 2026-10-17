@@ -224,7 +224,9 @@ export function createApp(deps: WebDeps): FetchHandler {
     gemini: "gemini-2.5-flash",
     anthropic: "claude-haiku-4-5",
     openrouter: "meta-llama/llama-3.3-70b-instruct:free",
-    groq: "llama-3.3-70b-versatile",
+    // llama-3.3-70b-versatile は 2026-08 に廃止済み → gpt-oss-120b が
+    // Groq 公式の代替推奨モデル。
+    groq: "openai/gpt-oss-120b",
     github: "gpt-4o-mini",
   };
   const defaultModelFor = (provider: string | null | undefined): string =>

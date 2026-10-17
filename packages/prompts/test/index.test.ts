@@ -235,3 +235,43 @@ describe("spec §7.3: <<AUTO_STOP>> (自律運転の終了要求)", () => {
     ).toBe(false);
   });
 });
+
+describe("マーカーの柔軟な末尾配置", () => {
+  it("1行に複数マーカーが並んでいても全て抜き出す", () => {
+    const r = parseOrchestratorMarkers(
+      '以下の内容で作品設定を決定しました。\n<<WORK_PATCH {"genre": "SF"}>> <<CANON_FACTS ["事実A", "事実B"]>> <<CHANGESET {"title":"t","description":"","ops":[{"op":"add_entity","kind":"character","name":"N"}]}>>',
+    );
+    expect(r.patch).toMatchObject({ genre: "SF" });
+    expect(r.canonFacts).toEqual(["事実A", "事実B"]);
+    expect(r.changeSet).not.toBeNull();
+    expect(r.cleanText).toBe("以下の内容で作品設定を決定しました。");
+  });
+
+  it("JSON が複数行にまたがるマーカーも抜き出す", () => {
+    const r = parseOrchestratorMarkers(
+      '本文です。\n<<WORK_PATCH {\n  "genre": "SF",\n  "premise": "宇宙の話"\n}>>',
+    );
+    expect(r.patch).toMatchObject({ genre: "SF", premise: "宇宙の話" });
+    expect(r.cleanText).toBe("本文です。");
+  });
+
+  it("マーカーの後ろに本文がある場合はマーカーを残す", () => {
+    const r = parseOrchestratorMarkers(
+      '返答。\n<<CANON_FACTS ["事実A"]>>\n追記の本文です。',
+    );
+    expect(r.canonFacts).toEqual([]);
+    expect(r.cleanText).toContain("追記の本文です。");
+    expect(r.cleanText).toContain("CANON_FACTS");
+  });
+
+  it("末尾のマーカーの JSON が壊れていたら打ち止め・本文に残す", () => {
+    const r = parseOrchestratorMarkers(
+      '返答。\n<<CANON_FACTS ["ok"]>>\n<<WORK_PATCH {壊れた>>',
+    );
+    expect(r.patch).toBeNull();
+    // 末尾が壊れていると構造を信用できないので手前のマーカーも読まない
+    expect(r.canonFacts).toEqual([]);
+    expect(r.cleanText).toContain("WORK_PATCH");
+    expect(r.cleanText).toContain("CANON_FACTS");
+  });
+});
