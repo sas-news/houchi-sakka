@@ -95,6 +95,39 @@ describe("POST /api/keys/:id/test — キー疎通テスト", () => {
     await mock.close();
   });
 
+  it("private base_url は allowPrivateBaseUrl=false で拒否される", async () => {
+    const { app } = makeApp({ allowPrivateBaseUrl: false });
+    const call = makeCall(app);
+    const cookie = await devLogin(call);
+    const res = await call(
+      "POST",
+      "/api/keys",
+      {
+        label: "t",
+        provider: "custom",
+        api_key: "sk-test",
+        base_url: "http://127.0.0.1:11434/v1",
+      },
+      { cookie },
+    );
+    expect(res.status).toBe(400);
+    const b = (await res.json()) as { error: { message: string } };
+    expect(b.error.message).toContain("プライベート");
+    // パブリック URL なら通る
+    const ok = await call(
+      "POST",
+      "/api/keys",
+      {
+        label: "t2",
+        provider: "custom",
+        api_key: "sk-test",
+        base_url: "https://api.example.com/v1",
+      },
+      { cookie },
+    );
+    expect(ok.status).toBe(201);
+  });
+
   it("他人のキーは 404", async () => {
     const mock = await startMock(() => [200, CHAT_OK]);
     const { app } = makeApp();

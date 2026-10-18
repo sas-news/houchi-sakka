@@ -17,4 +17,9 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string;
   /** orchestrator_turn の既定モデル。 */
   DEFAULT_MODEL?: string;
+  /**
+   * "true" の時だけプライベート/ループバック宛の base_url (localhost、
+   * LAN 内アドレス等) をキーに登録できる。ローカル LLM 等の自己用途向け。
+   */
+  ALLOW_PRIVATE_BASE_URL?: string;
 }

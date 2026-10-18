@@ -468,6 +468,9 @@ async function main(): Promise<void> {
     leaseTtlMs,
     providers,
     ...(args.envKey ? { envKey: required("OPENAI_API_KEY") } : {}),
+    allowPrivateBaseUrl:
+      process.env.ALLOW_PRIVATE_BASE_URL === "1" ||
+      process.env.ALLOW_PRIVATE_BASE_URL === "true",
     log: (m) => console.log(`[runner ${executorId}] ${m}`),
   };
 

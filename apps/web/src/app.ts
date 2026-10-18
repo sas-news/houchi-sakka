@@ -133,6 +133,7 @@ import {
 import { decrypt, encrypt, secretsEqual } from "@houchi/secrets";
 import {
   createProvider,
+  isPrivateBaseUrl,
   OpenAICompatProvider,
   ProviderError,
 } from "@houchi/providers";
@@ -156,6 +157,12 @@ export interface WebDeps {
   auth: Auth;
   /** 開発用ログインの有効化フラグ (DEV_LOGIN_ENABLED=true の時のみ true)。 */
   devLoginEnabled: boolean;
+  /**
+   * プライベート/ループバック宛の base_url をキー登録で許可するか
+   * (ALLOW_PRIVATE_BASE_URL=true)。既定は拒否 — runner が利用者LAN内で
+   * 動くため、他人が登録した base_url は SSRF の踏み台になり得る。
+   */
+  allowPrivateBaseUrl: boolean;
   /** orchestrator_turn の既定モデル (DEFAULT_MODEL)。 */
   defaultModel: string;
   /** リクエストのオリジン (dev-login の内部転送に使う)。 */
@@ -915,6 +922,18 @@ export function createApp(deps: WebDeps): FetchHandler {
               400,
               "bad_request",
               "カスタムプロバイダーにはエンドポイントURL (OpenAI互換) が必要です",
+            );
+          }
+          // SSRF ガード: private/loopback 宛の base_url は既定で拒否
+          if (
+            body.base_url !== undefined &&
+            isPrivateBaseUrl(body.base_url) &&
+            !deps.allowPrivateBaseUrl
+          ) {
+            return err(
+              400,
+              "bad_request",
+              "プライベートネットワーク向けのエンドポイントURLは利用できません",
             );
           }
           const ciphertext = await encrypt(body.api_key, secretKey);

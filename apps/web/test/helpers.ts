@@ -10,6 +10,8 @@ export function makeApp(
   opts: {
     devLogin?: boolean;
     github?: { clientId: string; clientSecret: string };
+    /** 既定 true: テストのモック鯖は localhost なので。 */
+    allowPrivateBaseUrl?: boolean;
   } = {},
 ) {
   const db = createTestDb();
@@ -26,6 +28,7 @@ export function makeApp(
     executorToken: TOKEN,
     auth,
     devLoginEnabled,
+    allowPrivateBaseUrl: opts.allowPrivateBaseUrl ?? true,
     defaultModel: "stub-model",
     baseUrl: BASE_URL,
   });

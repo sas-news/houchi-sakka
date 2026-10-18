@@ -263,6 +263,13 @@ export async function getJobByIdempotencyKey(
 export const DEFAULT_LEASE_TTL_MS = 60_000;
 
 /**
+ * ジョブの最大試行回数。リース (attempts+1) ごとに消費し、
+ * これを超えて未完のジョブは次回リース時に failed へ落とす。
+ * 恒久的な失敗 (障害・設定ミス等) が無限リトライで回り続けるのを防ぐ。
+ */
+export const MAX_JOB_ATTEMPTS = 8;
+
+/**
  * queued → leased の原子的遷移 (単一 UPDATE)。
  * - 期限切れの leased ジョブは再リース可能 (spec §7.5)。
  * - 有効なリースを持つ work_ref と同じ work_ref のジョブはリースしない
@@ -276,6 +283,16 @@ export async function leaseNextJob(
   const ttl = input.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   const leaseToken = crypto.randomUUID();
   const expires = t + ttl;
+  // 試行上限を超えた未完ジョブを先に failed へ落とす。
+  // leased で実行中 (リース有効) のものは対象外。
+  await db.run(sql`
+    UPDATE agent_jobs SET
+      status = 'failed',
+      error = 'max attempts exceeded',
+      updated_at = ${t}
+    WHERE attempts >= ${MAX_JOB_ATTEMPTS}
+      AND (status = 'queued' OR (status = 'leased' AND lease_expires_at <= ${t}))
+  `);
   const rows = (await db.all(sql`
     UPDATE agent_jobs SET
       status = 'leased',

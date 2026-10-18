@@ -47,6 +47,7 @@ function makeDeps(request: Request, env: Env): WebDeps {
         : {}),
     }),
     devLoginEnabled: env.DEV_LOGIN_ENABLED === "true",
+    allowPrivateBaseUrl: env.ALLOW_PRIVATE_BASE_URL === "true",
     defaultModel: env.DEFAULT_MODEL ?? "gpt-4o-mini",
     baseUrl,
   };

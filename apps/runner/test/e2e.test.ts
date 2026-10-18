@@ -81,6 +81,7 @@ beforeEach(async () => {
     executorToken: TOKEN,
     auth,
     devLoginEnabled: false,
+    allowPrivateBaseUrl: true,
     defaultModel: "stub",
     baseUrl: "http://localhost",
   });

@@ -426,3 +426,4 @@ export class StubProvider implements Provider {
     return { output_text: text, usage: this.stubOpts.usage ?? "unknown" };
   }
 }
+export { isPrivateBaseUrl } from "./base-url.js";

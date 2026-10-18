@@ -15,6 +15,7 @@ import {
   heartbeat,
   leaseNextJob,
   listProgress,
+  MAX_JOB_ATTEMPTS,
   RepoError,
 } from "../src/index.js";
 import { createTestDb } from "../src/testing.js";
@@ -88,6 +89,22 @@ describe("repo", () => {
     expect(b!.job.id).toBe(a!.job.id);
     expect(b!.job.attempts).toBe(2);
     expect(b!.job.leased_by).toBe("ex-2");
+  });
+
+  it("試行上限 (MAX_JOB_ATTEMPTS) を超えたジョブは次回リース時に failed になる", async () => {
+    const db = createTestDb();
+    const { job } = await createJob(db, JOB);
+    // 即期限切れリースを上限分繰り返して attempts=8 にする
+    for (let i = 0; i < MAX_JOB_ATTEMPTS; i++) {
+      expect(
+        await leaseNextJob(db, { executorId: "ex-1", leaseTtlMs: -1 }),
+      ).not.toBeNull();
+    }
+    // 次のリース要求で掃討され、failed になって返ってこない
+    expect(await leaseNextJob(db, { executorId: "ex-2" })).toBeNull();
+    const after = (await getJob(db, job.id))!;
+    expect(after.status).toBe("failed");
+    expect(after.error).toBe("max attempts exceeded");
   });
 
   it("同一 work_ref の leased ジョブがある間は同 work_ref をリースしない (直列化)", async () => {

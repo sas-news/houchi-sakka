@@ -1,5 +1,9 @@
 import { JobInfraError, runJob, type JobContext } from "@houchi/harness";
-import { OpenAICompatProvider, type Provider } from "@houchi/providers";
+import {
+  isPrivateBaseUrl,
+  OpenAICompatProvider,
+  type Provider,
+} from "@houchi/providers";
 import type { ApiClient } from "./api.js";
 
 /**
@@ -19,6 +23,12 @@ export interface RunnerDeps {
   providers: Record<string, Provider>;
   /** --env-key モード: DB ではなく環境変数のキーを使う。 */
   envKey?: string;
+  /**
+   * private/loopback 宛の base_url (LAN・localhost) を許可するか
+   * (ALLOW_PRIVATE_BASE_URL=1)。既定は拒否 — 第三者が登録したキー経由で
+   * LAN 内への SSRF になるのを防ぐ。ローカル LLM を使う時だけ ON にする。
+   */
+  allowPrivateBaseUrl?: boolean;
   /** token 進捗のバッファ flush 間隔 (ミリ秒)。 */
   tokenFlushMs?: number;
   log?: (msg: string) => void;
@@ -176,6 +186,16 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
       return {
         requiresKey: named?.requiresKey ?? true,
         generate: (req, apiKey, onToken) => {
+          if (
+            resolvedBaseUrl &&
+            isPrivateBaseUrl(resolvedBaseUrl) &&
+            !deps.allowPrivateBaseUrl
+          ) {
+            throw new Error(
+              `base_url はプライベートアドレスのため拒否しました ` +
+                `(ALLOW_PRIVATE_BASE_URL=1 で解除): ${resolvedBaseUrl}`,
+            );
+          }
           const provider = resolvedBaseUrl
             ? new OpenAICompatProvider({ baseURL: resolvedBaseUrl, name: n })
             : named;
