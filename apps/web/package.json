@@ -22,6 +22,7 @@
   "dependencies": {
     "@houchi/contracts": "workspace:*",
     "@houchi/database": "workspace:*",
+    "@houchi/providers": "workspace:*",
     "@houchi/secrets": "workspace:*",
     "@houchi/workspace": "workspace:*",
     "better-auth": "^1.7.7",

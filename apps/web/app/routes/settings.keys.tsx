@@ -43,10 +43,25 @@ export default function KeysPage({
 }: {
   loaderData: Awaited<ReturnType<typeof loader>>;
 }) {
+  const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
+    openai: "gpt-4o-mini",
+    gemini: "gemini-2.5-flash",
+    anthropic: "claude-haiku-4-5",
+    openrouter: "meta-llama/llama-3.3-70b-instruct:free",
+    groq: "openai/gpt-oss-120b",
+    github: "gpt-4o-mini",
+  };
+
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [provider, setProvider] = useState("openai");
+  const [testState, setTestState] = useState<
+    Record<
+      string,
+      { busy: boolean; model: string; result: string | null; ok: boolean | null }
+    >
+  >({});
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -76,6 +91,49 @@ export default function KeysPage({
     form.reset();
     setBusy(false);
     navigate(0);
+  };
+
+  const runTest = async (k: KeyInfo) => {
+    const cur = testState[k.id] ?? {
+      busy: false,
+      model: PROVIDER_DEFAULT_MODEL[k.provider] ?? "",
+      result: null,
+      ok: null,
+    };
+    setTestState((s) => ({
+      ...s,
+      [k.id]: { ...cur, busy: true, result: null, ok: null },
+    }));
+    try {
+      const res = await fetch(`/api/keys/${k.id}/test`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cur.model ? { model: cur.model } : {}),
+      });
+      const b = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        model?: string;
+        ms?: number;
+        response?: string;
+        error?: string;
+      };
+      setTestState((s) => ({
+        ...s,
+        [k.id]: {
+          ...cur,
+          busy: false,
+          ok: !!b.ok,
+          result: b.ok
+            ? `成功 (${b.ms}ms) ${(b.response ?? "").slice(0, 80)}`
+            : `失敗: ${b.error ?? "不明なエラー"}`,
+        },
+      }));
+    } catch {
+      setTestState((s) => ({
+        ...s,
+        [k.id]: { ...cur, busy: false, ok: false, result: "失敗: 通信エラー" },
+      }));
+    }
   };
 
   const remove = async (k: KeyInfo) => {
@@ -200,6 +258,43 @@ export default function KeysPage({
                 {(k.works_using ?? 0) > 0 ? (
                   <div className="key-date">
                     使用中の作品: {k.works_using} 件
+                  </div>
+                ) : null}
+                <div className="key-test-row">
+                  <input
+                    className="key-test-model"
+                    type="text"
+                    placeholder="モデル (省略時は既定)"
+                    value={testState[k.id]?.model ?? ""}
+                    onChange={(e) =>
+                      setTestState((s) => ({
+                        ...s,
+                        [k.id]: {
+                          ...(s[k.id] ?? {
+                            busy: false,
+                            result: null,
+                            ok: null,
+                            model: "",
+                          }),
+                          model: e.target.value,
+                        },
+                      }))
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    disabled={testState[k.id]?.busy}
+                    onClick={() => void runTest(k)}
+                  >
+                    {testState[k.id]?.busy ? "テスト中…" : "接続テスト"}
+                  </button>
+                </div>
+                {testState[k.id]?.result ? (
+                  <div
+                    className={`key-date ${testState[k.id]?.ok ? "" : "error-text"}`}
+                  >
+                    {testState[k.id]?.result}
                   </div>
                 ) : null}
               </div>

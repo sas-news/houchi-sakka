@@ -1140,6 +1140,15 @@ export const KeyListResponseSchema = z.object({
 });
 export type KeyListResponse = z.infer<typeof KeyListResponseSchema>;
 
+/**
+ * POST /api/keys/:id/test — キー疎通テスト。model 省略時は
+ * プロバイダー既定モデルで最小プロンプトを 1 回実行する。
+ */
+export const TestKeyRequestSchema = z.object({
+  model: z.string().max(128).optional(),
+});
+export type TestKeyRequest = z.infer<typeof TestKeyRequestSchema>;
+
 /** POST /api/dev/login — DEV_LOGIN_ENABLED=true の時だけ有効。 */
 export const DevLoginResponseSchema = z.object({
   ok: z.literal(true),

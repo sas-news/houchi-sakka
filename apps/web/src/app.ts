@@ -33,6 +33,7 @@ import {
   ResolveKeyRequestSchema,
   RewriteSceneRequestSchema,
   SetFindingStatusRequestSchema,
+  TestKeyRequestSchema,
   tiptapDocToText,
   WorkPatchRequestSchema,
   WorkSettingsRequestSchema,
@@ -130,6 +131,11 @@ import {
   type DbLike,
 } from "@houchi/database";
 import { decrypt, encrypt, secretsEqual } from "@houchi/secrets";
+import {
+  createProvider,
+  OpenAICompatProvider,
+  ProviderError,
+} from "@houchi/providers";
 import type { Auth } from "./auth.js";
 
 /**
@@ -923,6 +929,69 @@ export function createApp(deps: WebDeps): FetchHandler {
           });
           const { ciphertext: _drop, ...pub } = key;
           return json({ key: pub }, 201);
+        }
+
+        /**
+         * POST /api/keys/:id/test — キー疎通テスト。
+         * 自分のキーを復号して最小プロンプトを 1 回実行し、実プロバイダー
+         * アダプター経路の成否とエラー本文を返す。
+         * 注意: テストは Worker 側から発するので、localhost 系 base_url
+         * (ローカル runner にしか届かない) では必ず失敗する。
+         */
+        const keyTest = pathname.match(/^\/api\/keys\/([^/]+)\/test$/);
+        if (method === "POST" && keyTest) {
+          const body = await parseBody(request, TestKeyRequestSchema);
+          if (body instanceof Response) return body;
+          const key = await getKeyById(db, keyTest[1]!);
+          if (!key || key.owner_ref !== user.id) {
+            return err(404, "not_found", "見つかりません");
+          }
+          const providerName = key.provider || "openai";
+          const provider = key.base_url
+            ? new OpenAICompatProvider({
+                baseURL: key.base_url,
+                name: providerName,
+              })
+            : createProvider(providerName);
+          if (!provider) {
+            return err(400, "bad_request", `未知のプロバイダー: ${providerName}`);
+          }
+          const model = body.model ?? defaultModelFor(providerName);
+          const apiKey = await decrypt(key.ciphertext, secretKey);
+          const t0 = Date.now();
+          const timeout = new Promise<never>((_r, rej) =>
+            setTimeout(
+              () => rej(new ProviderError("テストがタイムアウトしました (30s)")),
+              30000,
+            ),
+          );
+          try {
+            const res = await Promise.race([
+              provider.generate(
+                {
+                  model,
+                  input: [{ role: "user", content: "ok とだけ返答してください" }],
+                },
+                apiKey,
+              ),
+              timeout,
+            ]);
+            return json({
+              ok: true,
+              provider: providerName,
+              model,
+              ms: Date.now() - t0,
+              response: (res.output_text ?? "").slice(0, 200),
+            });
+          } catch (e) {
+            return json({
+              ok: false,
+              provider: providerName,
+              model,
+              ms: Date.now() - t0,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
         }
 
         // DELETE /api/keys/:id — 自分のキーだけ消せる

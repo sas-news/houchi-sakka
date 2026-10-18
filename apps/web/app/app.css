@@ -1059,6 +1059,24 @@ button:disabled {
   font-size: 0.78rem;
 }
 
+.key-row .key-test-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.key-row .key-test-model {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+}
+
 @media (min-width: 720px) {
   .key-row {
     flex-direction: row;

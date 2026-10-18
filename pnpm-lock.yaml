@@ -54,6 +54,9 @@ importers:
       '@houchi/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@houchi/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@houchi/secrets':
         specifier: workspace:*
         version: link:../../packages/secrets
