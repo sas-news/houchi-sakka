@@ -58,19 +58,31 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
   log?.(`leased job ${jobId} kind=${job.kind} attempt=${job.attempts}`);
 
   const postProgress = infra("progress", (type: "status" | "token" | "note", data: unknown) =>
-    api.progress(jobId, { lease_token: leaseToken, type, data }).then(() => {}),
+    api
+      .progress(jobId, {
+        lease_token: leaseToken,
+        type,
+        data,
+        lease_ttl_ms: deps.leaseTtlMs,
+      })
+      .then(() => {}),
   );
 
   // token 進捗は大量の POST にならないようバッファして流す。
+  // 時間基準は「前回 POST 完了」からの経過にする: 開始時刻にすると
+  // POST 自体が flushMs を超えた場合に全エントリが flush 判定を
+  // 通ってしまい、実質 1 トークン 1 POST へ退化する (lease 超過の原因)。
   let tokenBuf = "";
   let lastFlush = Date.now();
   const flushMs = deps.tokenFlushMs ?? TOKEN_FLUSH_MS;
+  /** これだけ溜まれば時間に関係なく送る (高速ストリーム時の上限)。 */
+  const TOKEN_FLUSH_CHARS = 200;
   const flushTokens = async () => {
     if (tokenBuf === "") return;
     const text = tokenBuf;
     tokenBuf = "";
-    lastFlush = Date.now();
     await postProgress("token", { text });
+    lastFlush = Date.now();
   };
 
   // キーに紐づくカスタムエンドポイント (OpenAI 互換)。resolveKey で
@@ -175,7 +187,13 @@ export async function tick(deps: RunnerDeps): Promise<boolean> {
     postProgress: async (type, data) => {
       if (type === "token") {
         tokenBuf += (data as { text?: string }).text ?? "";
-        if (Date.now() - lastFlush < flushMs) return;
+        // 量か時間のどちらかの閾値で送る。少なければバッファ継続。
+        if (
+          tokenBuf.length < TOKEN_FLUSH_CHARS &&
+          Date.now() - lastFlush < flushMs
+        ) {
+          return;
+        }
         await flushTokens();
         return;
       }

@@ -319,6 +319,11 @@ export async function appendProgress(
     leaseToken: string;
     type: ProgressEventType;
     data: unknown;
+    /**
+     * 指定時は進捗受理をリース延長としても扱う。活動中のジョブが
+     * lease expired で中断されないようにするため (spec §7.5)。
+     */
+    leaseTtlMs?: number;
   },
 ): Promise<ProgressEvent> {
   assertLease(await getJob(db, input.jobId), input.leaseToken);
@@ -333,9 +338,18 @@ export async function appendProgress(
     )
     RETURNING *
   `)) as Row[];
-  await db.run(
-    sql`UPDATE agent_jobs SET updated_at = ${t} WHERE id = ${input.jobId}`,
-  );
+  if (input.leaseTtlMs !== undefined) {
+    await db.run(sql`
+      UPDATE agent_jobs SET
+        updated_at = ${t},
+        lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ${t + input.leaseTtlMs})
+      WHERE id = ${input.jobId}
+    `);
+  } else {
+    await db.run(
+      sql`UPDATE agent_jobs SET updated_at = ${t} WHERE id = ${input.jobId}`,
+    );
+  }
   return rowToEvent(rows[0]!);
 }
 

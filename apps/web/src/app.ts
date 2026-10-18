@@ -1804,6 +1804,9 @@ export function createApp(deps: WebDeps): FetchHandler {
             leaseToken: body.lease_token,
             type: body.type,
             data: body.data,
+            ...(body.lease_ttl_ms !== undefined
+              ? { leaseTtlMs: body.lease_ttl_ms }
+              : {}),
           });
           return json({ event });
         }

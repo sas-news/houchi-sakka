@@ -151,6 +151,11 @@ export const ProgressRequestSchema = z.object({
   lease_token: z.string().min(1),
   type: ProgressEventTypeSchema,
   data: z.unknown(),
+  /**
+   * 指定時は受理した進捗がリース延長も兼ねる (実行中のジョブが
+   * lease expired で死なないよう、活動中は鯖側で期限を延ばす)。
+   */
+  lease_ttl_ms: z.number().int().positive().optional(),
 });
 export type ProgressRequest = z.infer<typeof ProgressRequestSchema>;
 

@@ -98,6 +98,44 @@ describe("web api", () => {
     );
   });
 
+  it("progress に lease_ttl_ms を付けるとリース期限が延長される", async () => {
+    const { jobId, lease } = await createAndLease();
+    const before = (
+      (await db.all(
+        sql`SELECT lease_expires_at FROM agent_jobs WHERE id = ${jobId}`,
+      )) as { lease_expires_at: number }[]
+    )[0]!.lease_expires_at;
+    const res = await call("POST", `/api/jobs/${jobId}/progress`, {
+      lease_token: lease.lease_token,
+      type: "status",
+      data: { step: "call_provider" },
+      lease_ttl_ms: 300_000,
+    });
+    expect(res.status).toBe(200);
+    const after = (
+      (await db.all(
+        sql`SELECT lease_expires_at FROM agent_jobs WHERE id = ${jobId}`,
+      )) as { lease_expires_at: number }[]
+    )[0]!.lease_expires_at;
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("lease_ttl_ms なしの progress はリース期限を変えない", async () => {
+    const { jobId, lease } = await createAndLease();
+    const res = await call("POST", `/api/jobs/${jobId}/progress`, {
+      lease_token: lease.lease_token,
+      type: "status",
+      data: { step: "call_provider" },
+    });
+    expect(res.status).toBe(200);
+    const exp = (
+      (await db.all(
+        sql`SELECT lease_expires_at FROM agent_jobs WHERE id = ${jobId}`,
+      )) as { lease_expires_at: number }[]
+    )[0]!.lease_expires_at;
+    expect(exp).toBe(lease.lease_expires_at);
+  });
+
   it("lease_token 不一致の complete は 409", async () => {
     const { jobId } = await createAndLease();
     const res = await call("POST", `/api/jobs/${jobId}/complete`, {
